@@ -1,0 +1,135 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model AdminUser {
+  id           String   @id @default(uuid())
+  username     String   @unique @db.VarChar(64)
+  passwordHash String   @db.VarChar(255)
+  role         String   @default("admin") @db.VarChar(32)
+  enabled      Boolean  @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  auditLogs AdminAuditLog[]
+}
+
+model AiSetting {
+  id              String   @id @default(uuid())
+  provider        String   @default("deepseek") @db.VarChar(32)
+  baseUrl         String   @db.VarChar(512)
+  apiKeyEncrypted String   @db.Text
+  model           String   @db.VarChar(128)
+  temperature     Float    @default(0.3)
+  maxTokens       Int      @default(4096)
+  timeoutMs       Int      @default(60000)
+  enabled         Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model PromptTemplate {
+  id        String   @id @default(uuid())
+  name      String   @db.VarChar(128)
+  type      String   @db.VarChar(32)
+  content   String   @db.LongText
+  isDefault Boolean  @default(false)
+  version   Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model SystemSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique @db.VarChar(128)
+  value     String   @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model SparkReport {
+  id               String    @id @default(uuid())
+  sparkCode        String    @db.VarChar(128)
+  sparkUrl         String    @db.VarChar(512)
+  reportType       String    @default("unknown") @db.VarChar(32)
+  status           String    @default("pending") @db.VarChar(32)
+  progress         Int       @default(0)
+  stage            String?   @db.VarChar(64)
+  platform         String?   @db.VarChar(64)
+  minecraftVersion String?   @db.VarChar(32)
+  sparkVersion     String?   @db.VarChar(32)
+  serverBrand      String?   @db.VarChar(128)
+  durationSeconds  Int?
+  rawMetadataJson  String?   @db.LongText
+  normalizedJson   String?   @db.LongText
+  ruleAnalysisJson String?   @db.LongText
+  errorCode        String?   @db.VarChar(64)
+  errorMessage     String?   @db.VarChar(512)
+  errorDetailJson  String?   @db.Text
+  clientIpHash     String    @db.VarChar(128)
+  startedAt        DateTime?
+  completedAt      DateTime?
+  lockedAt         DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  expiresAt        DateTime?
+
+  analysisResult AnalysisResult?
+
+  @@index([sparkCode])
+  @@index([sparkCode, status, createdAt])
+  @@index([status])
+  @@index([clientIpHash, createdAt])
+  @@index([expiresAt])
+}
+
+model AnalysisResult {
+  id               String   @id @default(uuid())
+  reportId         String   @unique
+  severity         String?  @db.VarChar(32)
+  summary          String?  @db.VarChar(512)
+  aiResultJson     String?  @db.LongText
+  markdownReport   String?  @db.LongText
+  isFallback       Boolean  @default(false)
+  model            String?  @db.VarChar(128)
+  promptTemplateId String?  @db.VarChar(64)
+  promptVersion    Int?
+  inputTokens      Int?
+  outputTokens     Int?
+  createdAt        DateTime @default(now())
+
+  report SparkReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+}
+
+model SystemLog {
+  id          String   @id @default(uuid())
+  level       String   @db.VarChar(16)
+  module      String   @db.VarChar(64)
+  message     String   @db.Text
+  contextJson String?  @db.Text
+  createdAt   DateTime @default(now())
+
+  @@index([level, createdAt])
+  @@index([module, createdAt])
+}
+
+model AdminAuditLog {
+  id          String   @id @default(uuid())
+  adminUserId String
+  action      String   @db.VarChar(64)
+  targetType  String?  @db.VarChar(64)
+  targetId    String?  @db.VarChar(64)
+  detailJson  String?  @db.Text
+  createdAt   DateTime @default(now())
+
+  adminUser AdminUser @relation(fields: [adminUserId], references: [id])
+
+  @@index([adminUserId, createdAt])
+  @@index([action, createdAt])
+}
