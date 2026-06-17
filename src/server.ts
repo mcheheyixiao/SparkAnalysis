@@ -1,11 +1,19 @@
 import { buildApp } from './app.js'
 import { env } from './config/env.js'
 import { prisma } from './plugins/prisma.js'
-
-let queueService: { shutdown: () => Promise<void> } | null = null
+import { InMemoryJobQueueService } from './modules/queue/in-memory-queue.js'
+import { settingsService } from './modules/settings/settings.service.js'
+import { setQueueService } from './modules/public/public.routes.js'
+import { setQueueStatusGetter } from './modules/admin/admin.routes.js'
 
 async function main() {
   const app = await buildApp()
+
+  // ---- Queue service ----
+  const maxConcurrency = await settingsService.getNumber('maxConcurrency')
+  const queueService = new InMemoryJobQueueService(maxConcurrency || 2)
+  setQueueService(queueService)
+  setQueueStatusGetter(() => queueService.getStats())
 
   // ---- Startup recovery: mark pending/processing as failed ----
   try {
@@ -58,7 +66,3 @@ main().catch((err) => {
   console.error('Failed to start server:', err)
   process.exit(1)
 })
-
-export function setQueueService(qs: { shutdown: () => Promise<void> }) {
-  queueService = qs
-}

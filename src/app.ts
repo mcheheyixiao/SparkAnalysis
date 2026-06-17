@@ -5,6 +5,9 @@ import rateLimit from '@fastify/rate-limit'
 import { env } from './config/env.js'
 import { registerErrorHandler } from './plugins/error-handler.js'
 import requestIdPlugin from './plugins/request-id.js'
+import { registerAuthPlugin } from './plugins/auth.js'
+import { publicRoutes, setQueueService } from './modules/public/public.routes.js'
+import { adminRoutes, setQueueStatusGetter } from './modules/admin/admin.routes.js'
 
 export async function buildApp() {
   const fastify = Fastify({
@@ -45,6 +48,13 @@ export async function buildApp() {
 
   // ---- Error handler ----
   registerErrorHandler(fastify)
+
+  // ---- Auth plugin (must be before routes) ----
+  await registerAuthPlugin(fastify)
+
+  // ---- Routes ----
+  await fastify.register(publicRoutes)
+  await fastify.register(adminRoutes)
 
   // ---- Health check ----
   fastify.get('/api/health', async () => ({
