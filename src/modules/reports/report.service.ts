@@ -1,0 +1,401 @@
+import { randomUUID } from 'crypto'
+import { prisma } from '../../plugins/prisma.js'
+import { AppError } from '../../utils/errors.js'
+import { safeJsonParse, safeJsonStringify } from '../../utils/json.js'
+import { settingsService } from '../settings/settings.service.js'
+
+export interface FindOrCreateResult {
+  reportId: string
+  status: 'completed' | 'processing' | 'pending'
+  reused: boolean
+  reuseReason?: 'completed_recent' | 'processing_existing'
+  sparkCode?: string
+}
+
+export class ReportService {
+  // sparkCodeCreateLocks: prevent concurrent creation of reports for same sparkCode
+  private sparkCodeCreateLocks = new Map<string, Promise<unknown>>()
+
+  async findOrCreateReport(sparkCode: string, clientIpHash: string): Promise<FindOrCreateResult> {
+    // Serialize per sparkCode
+    const existingLock = this.sparkCodeCreateLocks.get(sparkCode)
+    if (existingLock) {
+      await existingLock
+      // After waiting, check again
+      const retry = await this.findOrCreateReport(sparkCode, clientIpHash)
+      return retry
+    }
+
+    const lockPromise = this._findOrCreateReport(sparkCode, clientIpHash)
+    this.sparkCodeCreateLocks.set(sparkCode, lockPromise)
+
+    try {
+      const result = await lockPromise
+      return result
+    } finally {
+      this.sparkCodeCreateLocks.delete(sparkCode)
+    }
+  }
+
+  private async _findOrCreateReport(sparkCode: string, clientIpHash: string): Promise<FindOrCreateResult> {
+    const reuseTtlSeconds = await settingsService.getNumber('reuseReportTtlSeconds')
+    const autoCleanupDays = await settingsService.getNumber('autoCleanupDays')
+    const now = new Date()
+
+    // 1. Check completed + reusable
+    const completed = await prisma.sparkReport.findFirst({
+      where: {
+        sparkCode,
+        status: 'completed',
+      },
+      orderBy: { createdAt: 'desc' },
+    })
+
+    if (completed) {
+      const ageMs = now.getTime() - completed.createdAt.getTime()
+      const ageSeconds = ageMs / 1000
+      const expiresOk = !completed.expiresAt || completed.expiresAt > now
+
+      if (ageSeconds < reuseTtlSeconds && expiresOk) {
+        return {
+          reportId: completed.id,
+          status: 'completed',
+          reused: true,
+          reuseReason: 'completed_recent',
+          sparkCode,
+        }
+      }
+    }
+
+    // 2. Check processing
+    const processing = await prisma.sparkReport.findFirst({
+      where: {
+        sparkCode,
+        status: 'processing',
+      },
+      orderBy: { createdAt: 'desc' },
+    })
+
+    if (processing && processing.lockedAt) {
+      const lockedAgeMs = now.getTime() - processing.lockedAt.getTime()
+      const expiresOk = !processing.expiresAt || processing.expiresAt > now
+
+      if (lockedAgeMs < 5 * 60 * 1000 && expiresOk) {
+        return {
+          reportId: processing.id,
+          status: 'processing',
+          reused: true,
+          reuseReason: 'processing_existing',
+          sparkCode,
+        }
+      }
+
+      // Stale processing — mark as failed
+      await prisma.sparkReport.update({
+        where: { id: processing.id },
+        data: {
+          status: 'failed',
+          errorCode: 'SERVER_RESTARTED',
+          errorMessage: '任务处理超时，可能因服务器重启中断',
+          completedAt: now,
+        },
+      })
+    }
+
+    // 3. Check recent failed (auto retry if failed < 10 min ago)
+    const recentFailed = await prisma.sparkReport.findFirst({
+      where: {
+        sparkCode,
+        status: 'failed',
+        createdAt: { gt: new Date(now.getTime() - 10 * 60 * 1000) },
+      },
+      orderBy: { createdAt: 'desc' },
+    })
+
+    if (recentFailed) {
+      // Auto retry: create new report
+    }
+
+    // 4. Create new report
+    const expiresAt = autoCleanupDays > 0
+      ? new Date(now.getTime() + autoCleanupDays * 24 * 60 * 60 * 1000)
+      : null
+
+    const report = await prisma.sparkReport.create({
+      data: {
+        id: randomUUID(),
+        sparkCode,
+        sparkUrl: `https://spark.lucko.me/${sparkCode}`,
+        reportType: 'unknown',
+        status: 'pending',
+        stage: 'queued',
+        progress: 0,
+        clientIpHash,
+        expiresAt,
+      },
+    })
+
+    return {
+      reportId: report.id,
+      status: 'pending',
+      reused: false,
+      sparkCode,
+    }
+  }
+
+  async findById(reportId: string) {
+    const report = await prisma.sparkReport.findUnique({
+      where: { id: reportId },
+      include: { analysisResult: true },
+    })
+
+    if (!report) {
+      throw new AppError('REPORT_NOT_FOUND', '报告不存在')
+    }
+
+    return report
+  }
+
+  async findByIdPublic(reportId: string) {
+    const report = await prisma.sparkReport.findUnique({
+      where: { id: reportId },
+      include: { analysisResult: true },
+    })
+
+    if (!report) {
+      throw new AppError('REPORT_NOT_FOUND', '报告不存在')
+    }
+
+    // Strip internal/sensitive data
+    const result: any = {
+      reportId: report.id,
+      sparkCode: report.sparkCode,
+      sparkUrl: report.sparkUrl,
+      reportType: report.reportType,
+      status: report.status,
+      severity: report.analysisResult?.severity || null,
+      summary: report.analysisResult?.summary || null,
+      createdAt: report.createdAt,
+      completedAt: report.completedAt,
+    }
+
+    if (report.status === 'completed') {
+      result.normalizedSummary = safeJsonParse(report.normalizedJson, null)
+      result.ruleAnalysis = safeJsonParse(report.ruleAnalysisJson, null)
+      result.aiResult = safeJsonParse(report.analysisResult?.aiResultJson, null)
+    }
+
+    if (report.status === 'processing' || report.status === 'pending') {
+      result.progress = report.progress
+      result.stage = report.stage
+      result.message = stageToMessage(report.stage)
+    }
+
+    if (report.status === 'failed') {
+      result.errorCode = report.errorCode
+      result.errorMessage = report.errorMessage
+    }
+
+    return result
+  }
+
+  async saveAnalysisResult(
+    reportId: string,
+    aiResult: {
+      aiResultJson: object
+      markdownReport: string
+      severity: string
+      summary: string
+      isFallback: boolean
+      model?: string
+      promptTemplateId?: string
+      promptVersion?: number
+      inputTokens?: number
+      outputTokens?: number
+    },
+  ) {
+    const data = {
+      severity: aiResult.severity,
+      summary: aiResult.summary,
+      aiResultJson: safeJsonStringify(aiResult.aiResultJson),
+      markdownReport: aiResult.markdownReport,
+      isFallback: aiResult.isFallback,
+      model: aiResult.model,
+      promptTemplateId: aiResult.promptTemplateId,
+      promptVersion: aiResult.promptVersion,
+      inputTokens: aiResult.inputTokens,
+      outputTokens: aiResult.outputTokens,
+    }
+
+    const existing = await prisma.analysisResult.findUnique({ where: { reportId } })
+
+    if (existing) {
+      await prisma.analysisResult.update({ where: { reportId }, data })
+    } else {
+      await prisma.analysisResult.create({
+        data: { id: randomUUID(), reportId, ...data },
+      })
+    }
+  }
+
+  async markFailed(
+    reportId: string,
+    errorCode: string,
+    errorMessage: string,
+    errorDetailJson?: unknown,
+  ) {
+    await prisma.sparkReport.update({
+      where: { id: reportId },
+      data: {
+        status: 'failed',
+        stage: 'failed',
+        errorCode,
+        errorMessage,
+        errorDetailJson: errorDetailJson ? safeJsonStringify(errorDetailJson) : null,
+        completedAt: new Date(),
+      },
+    })
+  }
+
+  async updateStage(
+    reportId: string,
+    data: {
+      stage?: string
+      progress?: number
+      status?: string
+      platform?: string
+      minecraftVersion?: string
+      sparkVersion?: string
+      serverBrand?: string
+      reportType?: string
+      durationSeconds?: number
+      rawMetadataJson?: string | null
+      normalizedJson?: string | null
+      ruleAnalysisJson?: string | null
+    },
+  ) {
+    await prisma.sparkReport.update({
+      where: { id: reportId },
+      data,
+    })
+  }
+
+  async list(options: {
+    status?: string
+    sparkCode?: string
+    severity?: string
+    reportType?: string
+    createdFrom?: string
+    createdTo?: string
+    page?: number
+    pageSize?: number
+    sortBy?: string
+    sortOrder?: 'asc' | 'desc'
+  }) {
+    const { page = 1, pageSize = 20, sortBy = 'createdAt', sortOrder = 'desc' } = options
+    const where: any = {}
+
+    if (options.status) where.status = options.status
+    if (options.sparkCode) where.sparkCode = { contains: options.sparkCode }
+    if (options.reportType) where.reportType = options.reportType
+    if (options.createdFrom || options.createdTo) {
+      where.createdAt = {}
+      if (options.createdFrom) where.createdAt.gte = new Date(options.createdFrom)
+      if (options.createdTo) where.createdAt.lte = new Date(options.createdTo)
+    }
+
+    // Severity comes from AnalysisResult (join)
+    if (options.severity) {
+      where.analysisResult = { severity: options.severity }
+    }
+
+    const [total, reports] = await Promise.all([
+      prisma.sparkReport.count({ where }),
+      prisma.sparkReport.findMany({
+        where,
+        include: { analysisResult: true },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        orderBy: { [sortBy]: sortOrder },
+      }),
+    ])
+
+    return { total, reports, page, pageSize }
+  }
+
+  async delete(reportId: string) {
+    const report = await prisma.sparkReport.findUnique({ where: { id: reportId } })
+    if (!report) {
+      throw new AppError('REPORT_NOT_FOUND', '报告不存在')
+    }
+
+    // Cascade delete (AnalysisResult cascade configured in Prisma)
+    await prisma.sparkReport.delete({ where: { id: reportId } })
+  }
+
+  async cleanup(olderThanDays: number, dryRun: boolean) {
+    const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000)
+
+    // Find reports where expiresAt is set and past due, OR created before cutoff without expiresAt
+    const matched = await prisma.sparkReport.count({
+      where: {
+        OR: [
+          { expiresAt: { not: null, lt: new Date() } },
+          { expiresAt: null, createdAt: { lt: cutoff } },
+        ],
+      },
+    })
+
+    if (!dryRun && matched > 0) {
+      await prisma.sparkReport.deleteMany({
+        where: {
+          OR: [
+            { expiresAt: { not: null, lt: new Date() } },
+            { expiresAt: null, createdAt: { lt: cutoff } },
+          ],
+        },
+      })
+    }
+
+    return { matched, deleted: dryRun ? 0 : matched, dryRun }
+  }
+
+  async getStatus(reportId: string) {
+    const report = await prisma.sparkReport.findUnique({
+      where: { id: reportId },
+    })
+
+    if (!report) {
+      throw new AppError('REPORT_NOT_FOUND', '报告不存在')
+    }
+
+    return {
+      reportId: report.id,
+      status: report.status,
+      progress: report.progress,
+      stage: report.stage,
+      message: stageToMessage(report.stage),
+      errorCode: report.errorCode,
+      errorMessage: report.errorMessage,
+    }
+  }
+}
+
+const STAGE_MESSAGES: Record<string, string> = {
+  queued: '等待分析任务开始',
+  fetching_spark: '正在读取 spark 报告',
+  normalizing: '正在整理性能数据',
+  rule_analyzing: '正在进行规则预分析',
+  building_prompt: '正在构建 AI 分析上下文',
+  calling_ai: '正在调用 AI 生成诊断报告',
+  saving_result: '正在保存分析结果',
+  completed: '分析完成',
+  failed: '分析失败',
+}
+
+function stageToMessage(stage: string | null | undefined): string {
+  if (!stage) return '未知状态'
+  return STAGE_MESSAGES[stage] || stage
+}
+
+export const reportService = new ReportService()
