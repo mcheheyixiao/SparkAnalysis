@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { adminAuthService } from '../modules/admin/admin-auth.service.js'
+import { AppError } from '../utils/errors.js'
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -24,7 +25,7 @@ export async function registerAuthPlugin(fastify: FastifyInstance) {
 
     const authHeader = request.headers.authorization
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      throw { statusCode: 401, code: 'UNAUTHORIZED', message: '请先登录' }
+      throw new AppError('UNAUTHORIZED', '请先登录')
     }
 
     const token = authHeader.slice(7)

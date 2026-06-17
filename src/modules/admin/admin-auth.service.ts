@@ -16,7 +16,33 @@ export interface JwtPayload {
 }
 
 export class AdminAuthService {
+  // Rate limiter: 10 attempts per 15 minutes per IP
+  private rateLimitMap = new Map<string, { count: number; windowStart: number }>()
+  private readonly RATE_LIMIT_MAX = 10
+  private readonly RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000 // 15 minutes
+
+  private checkRateLimit(ip: string): void {
+    const now = Date.now()
+    const entry = this.rateLimitMap.get(ip)
+
+    if (!entry || now - entry.windowStart > this.RATE_LIMIT_WINDOW_MS) {
+      // Start a new window
+      this.rateLimitMap.set(ip, { count: 1, windowStart: now })
+      return
+    }
+
+    if (entry.count >= this.RATE_LIMIT_MAX) {
+      throw new AppError('RATE_LIMIT_EXCEEDED', '登录尝试过于频繁，请15分钟后再试')
+    }
+
+    entry.count++
+  }
+
   async login(username: string, password: string, request: FastifyRequest) {
+    // Rate limiting — check before any credential validation
+    const ip = request.ip
+    this.checkRateLimit(ip)
+
     const user = await prisma.adminUser.findUnique({ where: { username } })
     if (!user) {
       throw new AppError('INVALID_CREDENTIALS', '用户名或密码错误')
