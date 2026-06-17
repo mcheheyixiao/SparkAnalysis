@@ -2,7 +2,6 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { parseSparkUrl } from '../spark/spark-url.parser.js'
 import { reportService } from '../reports/report.service.js'
-import { settingsService } from '../settings/settings.service.js'
 import { hashClientIp } from '../../utils/crypto.js'
 import { getClientIp } from '../../utils/ip.js'
 import { AppError } from '../../utils/errors.js'
@@ -22,15 +21,6 @@ export async function publicRoutes(fastify: FastifyInstance) {
   // POST /api/public/analyze — Submit spark URL for analysis
   fastify.post('/api/public/analyze', {
     bodyLimit: 1024, // 1KB body limit
-    preHandler: async (request, reply) => {
-      // Public rate limit
-      const ip = getClientIp(request)
-      const perMinute = await settingsService.getNumber('publicRateLimitPerMinute')
-      const perDay = await settingsService.getNumber('publicRateLimitPerDay')
-
-      // Fastify rate-limit handles per-minute; we just enforce per-day here
-      // (per-day enforcement simplified for MVP — relies on rate-limit plugin)
-    },
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const rid = (request as any).requestId
 
