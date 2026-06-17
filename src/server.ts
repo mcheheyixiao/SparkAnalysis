@@ -14,7 +14,7 @@ async function main() {
       data: {
         status: 'failed',
         errorCode: 'SERVER_RESTARTED',
-        errorMessage: 'サーバー再起動により分析が中断されました。Sparkリンクを再送信してください',
+        errorMessage: '服务器重启导致本次分析中断，请重新提交 spark 链接',
         completedAt: new Date(),
       },
     })
@@ -26,7 +26,11 @@ async function main() {
   }
 
   // ---- Graceful shutdown ----
+  let shuttingDown = false
+
   async function gracefulShutdown(signal: string) {
+    if (shuttingDown) return
+    shuttingDown = true
     app.log.info(`Received ${signal}, shutting down gracefully...`)
     try {
       if (queueService) {
