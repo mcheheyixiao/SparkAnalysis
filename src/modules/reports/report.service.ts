@@ -292,6 +292,9 @@ export class ReportService {
       rawMetadataJson?: string | null
       normalizedJson?: string | null
       ruleAnalysisJson?: string | null
+      startedAt?: Date | null
+      completedAt?: Date | null
+      lockedAt?: Date | null
     },
   ) {
     await prisma.sparkReport.update({
