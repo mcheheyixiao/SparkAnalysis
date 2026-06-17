@@ -1,8 +1,6 @@
 import { prisma } from '../../plugins/prisma.js'
 import { safeJsonParse } from '../../utils/json.js'
 
-type SettingValue = string | number | boolean | object
-
 export class SettingsService {
   async getString(key: string): Promise<string> {
     const setting = await prisma.systemSetting.findUnique({ where: { key } })

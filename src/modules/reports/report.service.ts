@@ -8,7 +8,7 @@ export interface FindOrCreateResult {
   reportId: string
   status: 'completed' | 'processing' | 'pending'
   reused: boolean
-  reuseReason?: 'completed_recent' | 'processing_existing'
+  reuseReason?: 'completed_recent' | 'processing_existing' | 'pending_existing'
   sparkCode?: string
 }
 
@@ -102,18 +102,38 @@ export class ReportService {
       })
     }
 
-    // 3. Check recent failed (auto retry if failed < 10 min ago)
-    const recentFailed = await prisma.sparkReport.findFirst({
+    // 3. Check for existing pending report (TOCTOU fix: a prior lock holder
+    //    may have already created a pending report while this caller waited)
+    const pending = await prisma.sparkReport.findFirst({
       where: {
         sparkCode,
-        status: 'failed',
-        createdAt: { gt: new Date(now.getTime() - 10 * 60 * 1000) },
+        status: 'pending',
       },
       orderBy: { createdAt: 'desc' },
     })
 
-    if (recentFailed) {
-      // Auto retry: create new report
+    if (pending) {
+      // If locked recently (within 5 minutes), return it — it is being processed
+      if (pending.lockedAt) {
+        const lockedAgeMs = now.getTime() - pending.lockedAt.getTime()
+        if (lockedAgeMs < 5 * 60 * 1000) {
+          return {
+            reportId: pending.id,
+            status: 'pending',
+            reused: true,
+            reuseReason: 'pending_existing',
+            sparkCode,
+          }
+        }
+      }
+      // lockedAt is old or null — return it; the queue will pick it up
+      return {
+        reportId: pending.id,
+        status: 'pending',
+        reused: true,
+        reuseReason: 'pending_existing',
+        sparkCode,
+      }
     }
 
     // 4. Create new report
