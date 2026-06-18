@@ -62,7 +62,7 @@ npx prisma generate
 npx prisma migrate deploy
 
 # 6. 填充初始数据（默认管理员、系统设置、Prompt 模板）
-npx prisma db seed
+npm run prisma:seed
 
 # 7. 启动开发服务器
 npm run dev
@@ -726,8 +726,10 @@ npx prisma generate
 npx prisma migrate deploy
 
 # 填充初始数据
-npx prisma db seed
+npm run prisma:seed
 ```
+
+也可以使用 `npx prisma db seed`，前提是 `package.json` 中 `prisma.seed` 已配置。
 
 如果 `prisma db seed` 报错，检查：
 - `.env` 中 `DATABASE_URL` 是否正确

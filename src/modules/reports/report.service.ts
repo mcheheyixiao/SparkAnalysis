@@ -12,10 +12,183 @@ export interface FindOrCreateResult {
   sparkCode?: string
 }
 
+export interface ReusableReport {
+  reportId: string
+  status: 'completed' | 'processing' | 'pending'
+  reuseReason: 'completed_recent' | 'processing_existing' | 'pending_existing'
+  sparkCode: string
+}
+
 export class ReportService {
   // sparkCodeCreateLocks: prevent concurrent creation of reports for same sparkCode
   private sparkCodeCreateLocks = new Map<string, Promise<unknown>>()
 
+  /**
+   * Check if there is a reusable report for the given sparkCode.
+   * Returns the reusable report info, or null if a new report must be created.
+   * Does NOT create anything — safe to call before daily limit checks.
+   */
+  async findReusableReport(sparkCode: string): Promise<ReusableReport | null> {
+    const reuseTtlSeconds = await settingsService.getNumber('reuseReportTtlSeconds')
+    const now = new Date()
+
+    // 1. Check completed + reusable
+    const completed = await prisma.sparkReport.findFirst({
+      where: { sparkCode, status: 'completed' },
+      orderBy: { createdAt: 'desc' },
+    })
+
+    if (completed) {
+      const ageMs = now.getTime() - completed.createdAt.getTime()
+      const ageSeconds = ageMs / 1000
+      const expiresOk = !completed.expiresAt || completed.expiresAt > now
+
+      if (ageSeconds < reuseTtlSeconds && expiresOk) {
+        return {
+          reportId: completed.id,
+          status: 'completed',
+          reuseReason: 'completed_recent',
+          sparkCode,
+        }
+      }
+    }
+
+    // 2. Check processing
+    const processing = await prisma.sparkReport.findFirst({
+      where: { sparkCode, status: 'processing' },
+      orderBy: { createdAt: 'desc' },
+    })
+
+    if (processing && processing.lockedAt) {
+      const lockedAgeMs = now.getTime() - processing.lockedAt.getTime()
+      const expiresOk = !processing.expiresAt || processing.expiresAt > now
+
+      if (lockedAgeMs < 5 * 60 * 1000 && expiresOk) {
+        return {
+          reportId: processing.id,
+          status: 'processing',
+          reuseReason: 'processing_existing',
+          sparkCode,
+        }
+      }
+
+      // Stale processing — mark as failed
+      await prisma.sparkReport.update({
+        where: { id: processing.id },
+        data: {
+          status: 'failed',
+          errorCode: 'SERVER_RESTARTED',
+          errorMessage: '任务处理超时，可能因服务器重启中断',
+          completedAt: now,
+        },
+      })
+    }
+
+    // 3. Check pending
+    const pending = await prisma.sparkReport.findFirst({
+      where: { sparkCode, status: 'pending' },
+      orderBy: { createdAt: 'desc' },
+    })
+
+    if (pending) {
+      if (pending.lockedAt) {
+        const lockedAgeMs = now.getTime() - pending.lockedAt.getTime()
+        if (lockedAgeMs < 5 * 60 * 1000) {
+          return {
+            reportId: pending.id,
+            status: 'pending',
+            reuseReason: 'pending_existing',
+            sparkCode,
+          }
+        }
+      }
+      return {
+        reportId: pending.id,
+        status: 'pending',
+        reuseReason: 'pending_existing',
+        sparkCode,
+      }
+    }
+
+    return null
+  }
+
+  /**
+   * Create a new pending SparkReport with per-sparkCode locking to prevent
+   * TOCTOU duplicates. Caller MUST have already checked daily limit and
+   * confirmed findReusableReport returned null.
+   */
+  async createPendingReport(sparkCode: string, clientIpHash: string): Promise<FindOrCreateResult> {
+    // Serialize per sparkCode to prevent concurrent creation
+    const existingLock = this.sparkCodeCreateLocks.get(sparkCode)
+    if (existingLock) {
+      await existingLock
+      // After waiting, double-check: another caller may have created the report
+      const reusable = await this.findReusableReport(sparkCode)
+      if (reusable) {
+        return {
+          reportId: reusable.reportId,
+          status: reusable.status,
+          reused: true,
+          reuseReason: reusable.reuseReason,
+          sparkCode,
+        }
+      }
+    }
+
+    const lockPromise = this._createPendingReport(sparkCode, clientIpHash)
+    this.sparkCodeCreateLocks.set(sparkCode, lockPromise)
+
+    try {
+      return await lockPromise
+    } finally {
+      this.sparkCodeCreateLocks.delete(sparkCode)
+    }
+  }
+
+  private async _createPendingReport(sparkCode: string, clientIpHash: string): Promise<FindOrCreateResult> {
+    const autoCleanupDays = await settingsService.getNumber('autoCleanupDays')
+    const now = new Date()
+
+    // Double-check: a prior lock holder may have already created a report
+    const existing = await this.findReusableReport(sparkCode)
+    if (existing) {
+      return {
+        reportId: existing.reportId,
+        status: existing.status,
+        reused: true,
+        reuseReason: existing.reuseReason,
+        sparkCode,
+      }
+    }
+
+    const expiresAt = autoCleanupDays > 0
+      ? new Date(now.getTime() + autoCleanupDays * 24 * 60 * 60 * 1000)
+      : null
+
+    const report = await prisma.sparkReport.create({
+      data: {
+        id: randomUUID(),
+        sparkCode,
+        sparkUrl: `https://spark.lucko.me/${sparkCode}`,
+        reportType: 'unknown',
+        status: 'pending',
+        stage: 'queued',
+        progress: 0,
+        clientIpHash,
+        expiresAt,
+      },
+    })
+
+    return {
+      reportId: report.id,
+      status: 'pending',
+      reused: false,
+      sparkCode,
+    }
+  }
+
+  // Kept for backward compatibility with any internal callers
   async findOrCreateReport(sparkCode: string, clientIpHash: string): Promise<FindOrCreateResult> {
     // Serialize per sparkCode
     const existingLock = this.sparkCodeCreateLocks.get(sparkCode)
@@ -222,7 +395,7 @@ export class ReportService {
   async saveAnalysisResult(
     reportId: string,
     aiResult: {
-      aiResultJson: object
+      aiResultJson: object | null
       markdownReport: string
       severity: string
       summary: string
@@ -237,7 +410,7 @@ export class ReportService {
     const data = {
       severity: aiResult.severity,
       summary: aiResult.summary,
-      aiResultJson: safeJsonStringify(aiResult.aiResultJson),
+      aiResultJson: aiResult.aiResultJson ? safeJsonStringify(aiResult.aiResultJson) : null,
       markdownReport: aiResult.markdownReport,
       isFallback: aiResult.isFallback,
       model: aiResult.model,

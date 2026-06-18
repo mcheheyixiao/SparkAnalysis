@@ -73,7 +73,15 @@ class AnalysisPipeline {
       // ---- Stage 6: Saving result (progress=95) ----
       await reportService.updateStage(reportId, { stage: 'saving_result', progress: 95 })
 
-      await reportService.saveAnalysisResult(reportId, aiOutput)
+      // Respect saveAiResult system setting: when false, do NOT save the full
+      // structured AI JSON. The markdownReport, severity, and summary are still
+      // saved so the frontend can display the report.
+      const saveAiResult = await settingsService.getBoolean('saveAiResult', true)
+
+      await reportService.saveAnalysisResult(reportId, {
+        ...aiOutput,
+        aiResultJson: saveAiResult ? aiOutput.aiResultJson : null,
+      })
 
       // Mark completed
       await reportService.updateStage(reportId, {

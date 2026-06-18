@@ -21,16 +21,16 @@ export function setQueueService(qs: typeof _queueService) {
 export async function publicRoutes(fastify: FastifyInstance) {
   // POST /api/public/analyze — Submit spark URL for analysis
   //
-  // Execution order (consistent with design):
+  // Execution flow (consistent with design):
   //   BodyLimit (1KB) → Fastify rate-limit → Zod → clientIpHash →
-  //   Business rate-limit (per-minute + per-day) → SparkUrlParser →
-  //   ReportService.findOrCreateReport → enqueue
+  //   Per-minute business rate limit (ALL requests, including reuse) →
+  //   SparkUrlParser → ReportService.findReusableReport →
+  //   If reusable → return immediately (no daily limit check).
+  //   If NOT reusable → Per-day business rate limit → createPendingReport → enqueue.
   //
   // Rate-limit design:
-  //   - Per-minute limit: checked on EVERY POST /analyze call (including reuse).
-  //   - Per-day limit:   checked on EVERY POST /analyze call (conservative —
-  //     even reuse attempts are blocked if the daily cap is reached, which is
-  //     acceptable because a user that exhausts their daily quota should wait).
+  //   - Per-minute: in-memory sliding window, counts ALL POST /analyze calls.
+  //   - Per-day:    DB-based, counts SparkReport rows, only before creating a NEW report.
   //   - Limits are read from SystemSetting: publicRateLimitPerMinute (default 5)
   //     and publicRateLimitPerDay (default 30).
   fastify.post('/api/public/analyze', {
@@ -48,30 +48,59 @@ export async function publicRoutes(fastify: FastifyInstance) {
       })
     }
 
-    // Parse spark URL (validates https + spark.lucko.me + extracts code)
-    const sparkUrl = parseSparkUrl(parsed.data.url)
-
     // Client IP hash (does NOT store plaintext IP)
     const ip = getClientIp(request)
     const ipHash = hashClientIp(ip)
 
-    // Business rate limiting (per-minute + per-day)
-    // Checked before findOrCreateReport so we don't create a report if limits are hit.
-    // isNewReport=true means we check BOTH per-minute and per-day limits.
-    // (Conservative: even reuse attempts are blocked if daily limit is exceeded.)
-    await publicRateLimitService.checkPublicAnalyzeLimit(ipHash, true)
+    // ---- Per-minute rate limit (ALL requests, including reuse) ----
+    await publicRateLimitService.checkPerMinuteLimit(ipHash)
 
-    // Find or create report
-    const result = await reportService.findOrCreateReport(sparkUrl.code, ipHash)
+    // Parse spark URL (validates https + spark.lucko.me + extracts code)
+    const sparkUrl = parseSparkUrl(parsed.data.url)
 
-    // If not reused (new pending report), enqueue
-    if (!result.reused) {
-      if (_queueService) {
-        await _queueService.enqueue({
-          reportId: result.reportId,
+    // ---- Check for reusable report ----
+    const reusable = await reportService.findReusableReport(sparkUrl.code)
+
+    if (reusable) {
+      // Reuse existing report — NO daily limit check
+      return reply.status(201).send({
+        success: true,
+        data: {
+          reportId: reusable.reportId,
+          status: reusable.status,
           sparkCode: sparkUrl.code,
-        })
-      }
+          reused: true,
+          reuseReason: reusable.reuseReason,
+        },
+      })
+    }
+
+    // ---- Per-day limit (only before creating a NEW report) ----
+    await publicRateLimitService.checkPerDayLimit(ipHash)
+
+    // ---- Create new pending report ----
+    const result = await reportService.createPendingReport(sparkUrl.code, ipHash)
+
+    // If createPendingReport detected a race and returned a reused result
+    if (result.reused) {
+      return reply.status(201).send({
+        success: true,
+        data: {
+          reportId: result.reportId,
+          status: result.status,
+          sparkCode: sparkUrl.code,
+          reused: true,
+          reuseReason: result.reuseReason,
+        },
+      })
+    }
+
+    // Enqueue the new report
+    if (_queueService) {
+      await _queueService.enqueue({
+        reportId: result.reportId,
+        sparkCode: sparkUrl.code,
+      })
     }
 
     return reply.status(201).send({
@@ -80,8 +109,7 @@ export async function publicRoutes(fastify: FastifyInstance) {
         reportId: result.reportId,
         status: result.status,
         sparkCode: sparkUrl.code,
-        reused: result.reused,
-        reuseReason: result.reuseReason || undefined,
+        reused: false,
       },
     })
   })

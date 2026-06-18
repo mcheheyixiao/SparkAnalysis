@@ -24,7 +24,7 @@ export async function registerErrorHandler(fastify: FastifyInstance) {
       return reply.status(400).send({
         success: false,
         error: {
-          code: 'INVALID_SPARK_URL',
+          code: 'VALIDATION_ERROR',
           message: firstIssue?.message || '请求参数验证失败',
           requestId,
         },
@@ -39,7 +39,7 @@ export async function registerErrorHandler(fastify: FastifyInstance) {
       return reply.status(400).send({
         success: false,
         error: {
-          code: 'INVALID_SPARK_URL',
+          code: 'VALIDATION_ERROR',
           message: err.message || '请求参数验证失败',
           requestId,
         },

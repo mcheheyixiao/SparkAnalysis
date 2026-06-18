@@ -7,63 +7,83 @@ import { AppError } from '../../utils/errors.js'
  *
  * Design:
  * - Uses clientIpHash (SHA-256 of IP + salt) — does NOT store plaintext IP.
- * - Counts SparkReport rows in the database to survive restarts.
- * - Two tiers:
- *   1. Per-minute:  count reports with same clientIpHash in the last 60 seconds.
- *      Checked on EVERY /api/public/analyze call (including reuse).
- *   2. Per-day:    count reports with same clientIpHash in the last 24 hours.
- *      Checked only BEFORE creating a NEW SparkReport (not on reuse).
- * - Defaults come from SystemSetting values loaded by the caller.
+ * - Two tiers with different counting strategies:
+ *   1. Per-minute:  in-memory sliding window, counts ALL POST /analyze requests
+ *      (including reuse). Survives restarts = acceptable in MVP.
+ *   2. Per-day:    DB-based, counts SparkReport rows. Only checked BEFORE
+ *      creating a NEW report (not on reuse). Survives restarts naturally.
+ * - Defaults come from SystemSetting values.
  *
- * Rationale for DB-based counting (per MVP constraints):
- * - No new tables needed.
- * - Survives server restarts.
- * - Uses the existing (clientIpHash, createdAt) index on SparkReport.
- * - Does not save plaintext IP anywhere.
+ * Per-minute uses in-memory because counting SparkReport rows would miss
+ * requests that reuse an existing completed/processing report (no new row
+ * is created). The in-memory window is reset on restart — acceptable for MVP.
  */
 export class PublicRateLimitService {
-  /**
-   * Check both per-minute and per-day limits for a given clientIpHash.
-   *
-   * @param clientIpHash - SHA-256 hash of (clientIp + IP_HASH_SALT)
-   * @param isNewReport  - true if the caller intends to CREATE a new SparkReport.
-   *                       When false (reusing an existing report), the daily limit
-   *                       is NOT checked — only the per-minute limit applies.
-   * @throws AppError with code RATE_LIMIT_EXCEEDED if limit is breached.
-   */
-  async checkPublicAnalyzeLimit(
-    clientIpHash: string,
-    isNewReport: boolean,
-  ): Promise<void> {
-    // 1. Per-minute check: how many reports from this IP hash in the last 60 seconds?
-    await this.checkPerMinuteLimit(clientIpHash)
+  /** In-memory sliding window: key = clientIpHash, value = timestamps (ms) */
+  private readonly minuteWindows = new Map<string, number[]>()
 
-    // 2. Per-day check: only for NEW reports (not reuse)
-    if (isNewReport) {
-      await this.checkPerDayLimit(clientIpHash)
+  /** Interval handle for periodic cleanup */
+  private cleanupInterval: ReturnType<typeof setInterval> | null = null
+
+  /**
+   * Optional overrides for testing — when set, these are used instead of
+   * querying the database for SystemSettings.
+   */
+  private readonly perMinuteLimitOverride?: number
+  private readonly perDayLimitOverride?: number
+
+  constructor(options?: { perMinuteLimit?: number; perDayLimit?: number }) {
+    this.perMinuteLimitOverride = options?.perMinuteLimit
+    this.perDayLimitOverride = options?.perDayLimit
+
+    // Clean up stale entries every 5 minutes to prevent unbounded Map growth.
+    this.cleanupInterval = setInterval(() => this.pruneStaleWindows(), 5 * 60_000)
+    // Allow the process to exit even if this timer is still active
+    if (this.cleanupInterval.unref) {
+      this.cleanupInterval.unref()
     }
   }
 
-  private async checkPerMinuteLimit(clientIpHash: string): Promise<void> {
+  /**
+   * Check per-minute limit (in-memory sliding window).
+   * MUST be called on EVERY POST /api/public/analyze request, including reuse.
+   *
+   * @throws AppError with code RATE_LIMIT_EXCEEDED if limit is breached.
+   */
+  async checkPerMinuteLimit(clientIpHash: string): Promise<void> {
     const limit = await this.getPerMinuteLimit()
-    const since = new Date(Date.now() - 60_000) // 60 seconds ago
+    const now = Date.now()
+    const windowStart = now - 60_000
 
-    const count = await prisma.sparkReport.count({
-      where: {
-        clientIpHash,
-        createdAt: { gte: since },
-      },
-    })
+    let timestamps = this.minuteWindows.get(clientIpHash)
 
-    if (count >= limit) {
+    if (!timestamps) {
+      timestamps = [now]
+      this.minuteWindows.set(clientIpHash, timestamps)
+      return
+    }
+
+    // Remove expired entries (older than 60 seconds)
+    const active = timestamps.filter(ts => ts > windowStart)
+
+    if (active.length >= limit) {
       throw new AppError(
         'RATE_LIMIT_EXCEEDED',
         '请求过于频繁，请稍后再试',
       )
     }
+
+    active.push(now)
+    this.minuteWindows.set(clientIpHash, active)
   }
 
-  private async checkPerDayLimit(clientIpHash: string): Promise<void> {
+  /**
+   * Check per-day limit (DB-based, counts SparkReport rows).
+   * MUST only be called BEFORE creating a NEW SparkReport — NOT on reuse.
+   *
+   * @throws AppError with code RATE_LIMIT_EXCEEDED if limit is breached.
+   */
+  async checkPerDayLimit(clientIpHash: string): Promise<void> {
     const limit = await this.getPerDayLimit()
     const since = new Date(Date.now() - 24 * 60 * 60_000) // 24 hours ago
 
@@ -82,16 +102,65 @@ export class PublicRateLimitService {
     }
   }
 
+  /**
+   * Legacy entry point — kept for backward compatibility.
+   * Prefer calling checkPerMinuteLimit and checkPerDayLimit separately
+   * so the route can control exactly when the daily check fires.
+   *
+   * @deprecated Use checkPerMinuteLimit + checkPerDayLimit directly.
+   */
+  async checkPublicAnalyzeLimit(
+    clientIpHash: string,
+    isNewReport: boolean,
+  ): Promise<void> {
+    await this.checkPerMinuteLimit(clientIpHash)
+
+    if (isNewReport) {
+      await this.checkPerDayLimit(clientIpHash)
+    }
+  }
+
+  // ---- Private helpers ----
+
   private async getPerMinuteLimit(): Promise<number> {
-    const value = await settingsService.getNumber('publicRateLimitPerMinute')
-    // Default 5, clamp to reasonable range
-    return Math.min(Math.max(value || 5, 1), 100)
+    if (this.perMinuteLimitOverride !== undefined) return this.perMinuteLimitOverride
+    const value = await settingsService.getNumber('publicRateLimitPerMinute', 5)
+    return Math.min(Math.max(value, 1), 100)
   }
 
   private async getPerDayLimit(): Promise<number> {
-    const value = await settingsService.getNumber('publicRateLimitPerDay')
-    // Default 30, clamp to reasonable range
-    return Math.min(Math.max(value || 30, 1), 1000)
+    if (this.perDayLimitOverride !== undefined) return this.perDayLimitOverride
+    const value = await settingsService.getNumber('publicRateLimitPerDay', 30)
+    return Math.min(Math.max(value, 1), 1000)
+  }
+
+  /**
+   * Remove entries with no active timestamps from the Map.
+   * Called periodically to prevent unbounded memory growth.
+   */
+  private pruneStaleWindows(): void {
+    const now = Date.now()
+    const windowStart = now - 60_000
+
+    for (const [key, timestamps] of this.minuteWindows) {
+      const active = timestamps.filter(ts => ts > windowStart)
+      if (active.length === 0) {
+        this.minuteWindows.delete(key)
+      } else {
+        this.minuteWindows.set(key, active)
+      }
+    }
+  }
+
+  /**
+   * Clean up interval on shutdown. Call from server shutdown handler.
+   */
+  destroy(): void {
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval)
+      this.cleanupInterval = null
+    }
+    this.minuteWindows.clear()
   }
 }
 

@@ -169,7 +169,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     if (!parsed.success) {
       return reply.status(400).send({
         success: false,
-        error: { code: 'INVALID_SPARK_URL', message: '参数校验失败', detail: parsed.error.issues },
+        error: { code: 'INVALID_ADMIN_INPUT', message: '参数校验失败', detail: parsed.error.issues },
       })
     }
 
@@ -375,7 +375,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       return reply.status(400).send({
         success: false,
         error: {
-          code: isUnrecognized ? 'INVALID_SETTINGS_KEY' : 'INVALID_SPARK_URL',
+          code: isUnrecognized ? 'INVALID_SETTINGS_KEY' : 'INVALID_SETTINGS_INPUT',
           message: isUnrecognized
             ? `未知的配置项: ${(firstIssue as any).keys?.join?.(', ') || 'unknown'}`
             : firstIssue?.message || '参数校验失败',
@@ -432,7 +432,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     if (!parsed.success) {
       return reply.status(400).send({
         success: false,
-        error: { code: 'INVALID_SPARK_URL', message: '参数校验失败', detail: parsed.error.issues },
+        error: { code: 'INVALID_PROMPT_INPUT', message: '参数校验失败', detail: parsed.error.issues },
       })
     }
 
@@ -478,7 +478,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     if (!parsed.success) {
       return reply.status(400).send({
         success: false,
-        error: { code: 'INVALID_SPARK_URL', message: '参数校验失败', detail: parsed.error.issues },
+        error: { code: 'INVALID_PROMPT_INPUT', message: '参数校验失败', detail: parsed.error.issues },
       })
     }
 
@@ -670,7 +670,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     if (!parsed.success) {
       return reply.status(400).send({
         success: false,
-        error: { code: 'INVALID_SPARK_URL', message: '参数校验失败', detail: parsed.error.issues },
+        error: { code: 'INVALID_REPORT_QUERY', message: '参数校验失败', detail: parsed.error.issues },
       })
     }
 

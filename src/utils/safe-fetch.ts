@@ -14,9 +14,93 @@ export interface SafeFetchResult {
   headers: Record<string, string | string[]>
 }
 
+// ---- Spark URL validation ----
+
+// Matches: /{code}  where code is [A-Za-z0-9_-]+
+const SPARK_PATH_RE = /^\/[A-Za-z0-9_-]+$/
+
+/**
+ * Validate that a URL is a safe spark fetch target.
+ *
+ * Rules (aligned with the SSRF design):
+ *   1. protocol === 'https:'
+ *   2. hostname === 'spark.lucko.me' (case-insensitive)
+ *   3. port is empty
+ *   4. username/password are empty
+ *   5. pathname matches /^\/[A-Za-z0-9_-]+$/
+ *   6. Only allowed query params: raw=1 (required) and full=true (optional)
+ *   7. No hash fragment
+ *
+ * @throws AppError with code SPARK_REMOTE_ERROR if validation fails.
+ */
+export function validateSparkFetchUrl(url: string | URL): void {
+  let parsed: URL
+  try {
+    parsed = typeof url === 'string' ? new URL(url) : url
+  } catch {
+    throw new AppError('SPARK_REMOTE_ERROR', '内部请求 URL 无效')
+  }
+
+  // 1. Protocol must be https
+  if (parsed.protocol !== 'https:') {
+    throw new AppError('SPARK_REMOTE_ERROR', '内部请求仅允许 HTTPS')
+  }
+
+  // 2. Hostname must be spark.lucko.me
+  if (parsed.hostname.toLowerCase() !== 'spark.lucko.me') {
+    throw new AppError('SPARK_REMOTE_ERROR', '不允许请求该域名')
+  }
+
+  // 3. No custom port
+  if (parsed.port) {
+    throw new AppError('SPARK_REMOTE_ERROR', '不允许自定义端口')
+  }
+
+  // 4. No username/password
+  if (parsed.username || parsed.password) {
+    throw new AppError('SPARK_REMOTE_ERROR', 'URL 格式无效')
+  }
+
+  // 5. Pathname must be /{code}
+  if (!SPARK_PATH_RE.test(parsed.pathname)) {
+    throw new AppError('SPARK_REMOTE_ERROR', 'spark URL 路径格式无效')
+  }
+
+  // 6. Query params: only raw=1 (required) and full=true (optional)
+  const params = parsed.searchParams
+  const raw = params.get('raw')
+  const full = params.get('full')
+
+  // raw=1 is required
+  if (raw !== '1') {
+    throw new AppError('SPARK_REMOTE_ERROR', 'spark 抓取参数无效')
+  }
+
+  // full, if present, must equal true
+  if (full !== null && full !== 'true') {
+    throw new AppError('SPARK_REMOTE_ERROR', 'spark 抓取参数无效')
+  }
+
+  // No other query params allowed
+  const allowedParams = new Set(['raw', 'full'])
+  for (const key of params.keys()) {
+    if (!allowedParams.has(key)) {
+      throw new AppError('SPARK_REMOTE_ERROR', 'spark 抓取参数无效')
+    }
+  }
+
+  // 7. No hash fragment
+  if (parsed.hash) {
+    throw new AppError('SPARK_REMOTE_ERROR', '不允许 URL hash fragment')
+  }
+}
+
+// ---- Main fetch function ----
+
 /**
  * Unified HTTP fetch with SSRF protection.
- * Only allows HTTPS to spark.lucko.me. Redirect handled manually (max 1).
+ * Only allows HTTPS to spark.lucko.me with strict path/query validation.
+ * Redirects are handled manually (max 1), with the same strict validation.
  *
  * Each request creates and closes its own undici Client to avoid resource leaks.
  */
@@ -28,28 +112,11 @@ export async function safeFetch(url: string, options: SafeFetchOptions = {}): Pr
     headers = {},
   } = options
 
-  // Validate URL
-  let targetUrl: URL
-  try {
-    targetUrl = new URL(url)
-  } catch {
-    throw new AppError('SPARK_REMOTE_ERROR', '内部请求 URL 无效')
-  }
+  // Validate URL — throws SPARK_REMOTE_ERROR on any violation
+  validateSparkFetchUrl(url)
 
-  // Only allow HTTPS
-  if (targetUrl.protocol !== 'https:') {
-    throw new AppError('SPARK_REMOTE_ERROR', '内部请求仅允许 HTTPS')
-  }
-
-  // Only allow spark.lucko.me
-  if (targetUrl.hostname.toLowerCase() !== 'spark.lucko.me') {
-    throw new AppError('SPARK_REMOTE_ERROR', '不允许请求该域名')
-  }
-
-  // No custom port
-  if (targetUrl.port) {
-    throw new AppError('SPARK_REMOTE_ERROR', '不允许自定义端口')
-  }
+  // Parse — safe after validation
+  const targetUrl = new URL(url)
 
   // First request
   const response = await requestOnce(targetUrl, {
@@ -75,7 +142,7 @@ export async function safeFetch(url: string, options: SafeFetchOptions = {}): Pr
       throw new AppError('SPARK_REMOTE_ERROR', '重定向缺少 Location header')
     }
 
-    // Validate redirect target
+    // Resolve redirect URL relative to the original
     let redirectUrl: URL
     try {
       redirectUrl = new URL(location, targetUrl)
@@ -83,11 +150,8 @@ export async function safeFetch(url: string, options: SafeFetchOptions = {}): Pr
       throw new AppError('SPARK_REMOTE_ERROR', '重定向 URL 无效')
     }
 
-    if (redirectUrl.protocol !== 'https:' ||
-        redirectUrl.hostname.toLowerCase() !== 'spark.lucko.me' ||
-        redirectUrl.port) {
-      throw new AppError('SPARK_REMOTE_ERROR', '重定向到非白名单域名')
-    }
+    // Strict validation of redirect target (same rules as initial URL)
+    validateSparkFetchUrl(redirectUrl)
 
     // Follow redirect (single hop, with own Client)
     const redirectResponse = await requestOnce(redirectUrl, {
@@ -141,16 +205,7 @@ async function requestOnce(
 
     // NOTE: We do NOT close the client here — the caller must read the
     // response body first, because undici streams the body lazily.
-    // Instead, we wrap the close logic in the caller's read flow.
-    // To handle this cleanly, we close the client AFTER the caller
-    // has finished reading the body. We achieve this by attaching a
-    // "close after body consumed" flag via the response object.
-    //
-    // Since undici's response.body is async iterable and must be fully
-    // consumed before closing, we use a pattern: the caller reads the
-    // body, then finally closes the client.
-    //
-    // We mark the client on the response for the caller to close.
+    // Instead, we attach the client to the response for the caller to close.
     ;(response as any)._safeFetchClient = client
 
     return response

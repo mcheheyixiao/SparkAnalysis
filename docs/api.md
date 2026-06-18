@@ -57,6 +57,11 @@
 | `UNAUTHORIZED` | 401 | 未登录或 token 已过期 |
 | `FORBIDDEN` | 403 | 无权限 |
 | `INVALID_SETTINGS_KEY` | 400 | 系统设置中包含不支持的 key |
+| `VALIDATION_ERROR` | 400 | 通用请求参数验证失败 |
+| `INVALID_ADMIN_INPUT` | 400 | 管理员后台参数校验失败 |
+| `INVALID_SETTINGS_INPUT` | 400 | 系统设置参数类型或范围无效 |
+| `INVALID_PROMPT_INPUT` | 400 | Prompt 模板参数无效 |
+| `INVALID_REPORT_QUERY` | 400 | 报告查询/清理参数无效 |
 | `AI_NOT_CONFIGURED` | 500 | AI 服务未配置或未启用 |
 | `SPARK_FETCH_TIMEOUT` | 502 | 抓取 spark 数据超时 |
 | `SPARK_REPORT_NOT_FOUND` | 502 | spark 报告不存在（远端 404） |
@@ -68,6 +73,16 @@
 | `SERVER_RESTARTED` | 500 | 服务器重启导致分析中断 |
 | `SERVER_SHUTDOWN` | 500 | 服务器关闭导致分析中断 |
 | `INTERNAL_ERROR` | 500 | 服务器内部错误 |
+
+> **注意：** `INVALID_SPARK_URL` 仅用于 spark 链接格式错误（public analyze 接口和 SparkUrlParser 内部），不用于管理员后台表单校验。管理员接口校验失败应返回 `VALIDATION_ERROR`、`INVALID_ADMIN_INPUT`、`INVALID_SETTINGS_INPUT`、`INVALID_PROMPT_INPUT` 或 `INVALID_REPORT_QUERY`。
+
+### saveAiResult 行为说明
+
+当管理员在系统设置中关闭 `saveAiResult`（设为 `false`）时：
+
+- **不保存** 完整的 AI 结构化 JSON（`aiResultJson` 为 `null`）
+- **仍保存** `markdownReport`、`severity`、`summary`、`isFallback`、`model` 等基础字段
+- 前端可通过 `markdownReport` 和 `summary` 展示报告，应优雅降级处理 `aiResult` 为 `null` 的情况
 
 ---
 

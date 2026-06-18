@@ -10,14 +10,16 @@ export class SettingsService {
     return setting?.value ?? ''
   }
 
-  async getNumber(key: string): Promise<number> {
+  async getNumber(key: string, defaultValue = 0): Promise<number> {
     const value = await this.getString(key)
+    if (!value) return defaultValue
     const n = Number(value)
-    return isNaN(n) ? 0 : n
+    return isNaN(n) ? defaultValue : n
   }
 
-  async getBoolean(key: string): Promise<boolean> {
+  async getBoolean(key: string, defaultValue = false): Promise<boolean> {
     const value = await this.getString(key)
+    if (!value) return defaultValue
     return value === 'true'
   }
 
