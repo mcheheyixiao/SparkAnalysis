@@ -8,7 +8,17 @@ const ENCODING = 'base64'
 
 function getKey(): Buffer {
   // ENCRYPTION_KEY is a base64-encoded 32-byte key
-  return Buffer.from(env.ENCRYPTION_KEY, 'base64')
+  const key = Buffer.from(env.ENCRYPTION_KEY, 'base64')
+  // Defensive check: even though env.ts validates this at startup,
+  // ensure the decoded key is exactly 32 bytes for AES-256-GCM
+  if (key.length !== 32) {
+    throw new Error(
+      `ENCRYPTION_KEY 解码后必须为 32 字节，当前为 ${key.length} 字节。\n` +
+      '请使用以下命令生成：\n' +
+      'node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'base64\'))"'
+    )
+  }
+  return key
 }
 
 export function encryptApiKey(plaintext: string): string {

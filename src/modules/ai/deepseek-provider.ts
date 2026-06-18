@@ -13,7 +13,7 @@ export class DeepSeekProvider implements IAIProvider {
   async chatCompletion(options: ChatCompletionOptions): Promise<ChatCompletionResult> {
     const { model, messages, temperature, maxTokens, timeoutMs } = options
 
-    if (!this.config.enabled || !this.config.apiKeyEncrypted) {
+    if (!this.config.enabled || !this.config.apiKey) {
       throw new AppError('AI_NOT_CONFIGURED', 'AI 服务未配置或未启用')
     }
 
@@ -26,7 +26,7 @@ export class DeepSeekProvider implements IAIProvider {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.config.apiKeyEncrypted}`,
+          'Authorization': `Bearer ${this.config.apiKey}`,
         },
         body: JSON.stringify({
           model: model || this.config.model,

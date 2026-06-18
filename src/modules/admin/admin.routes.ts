@@ -37,7 +37,23 @@ const aiSettingsSchema = z.object({
   enabled: z.boolean().optional(),
 })
 
-const systemSettingsSchema = z.record(z.string(), z.string())
+const systemSettingsWrapperSchema = z.object({
+  settings: z.object({
+    saveRawSparkData: z.boolean().optional(),
+    saveNormalizedSummary: z.boolean().optional(),
+    saveAiResult: z.boolean().optional(),
+    autoCleanupDays: z.number().int().min(0).max(365).optional(),
+    sparkFetchTimeoutMs: z.number().int().min(1000).max(60000).optional(),
+    sparkRawMaxBytes: z.number().int().min(1024).max(10485760).optional(),
+    sparkFullMaxBytes: z.number().int().min(1048576).max(52428800).optional(),
+    aiTimeoutMs: z.number().int().min(5000).max(180000).optional(),
+    publicRateLimitPerMinute: z.number().int().min(1).max(100).optional(),
+    publicRateLimitPerDay: z.number().int().min(1).max(1000).optional(),
+    maxConcurrency: z.number().int().min(1).max(5).optional(),
+    reuseCompletedReport: z.boolean().optional(),
+    reuseReportTtlSeconds: z.number().int().min(0).max(86400).optional(),
+  }).strict(), // reject unknown keys
+})
 
 const promptCreateSchema = z.object({
   name: z.string().min(1).max(128),
@@ -283,7 +299,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     const provider = new DeepSeekProvider({
       provider: config.provider,
       baseUrl: config.baseUrl,
-      apiKeyEncrypted: config.apiKey,
+      apiKey: config.apiKey,
       model: config.model,
       temperature: config.temperature,
       maxTokens: config.maxTokens,
@@ -345,18 +361,29 @@ export async function adminRoutes(fastify: FastifyInstance) {
   })
 
   // PUT /api/admin/settings/system
+  // Request body must be: { "settings": { "autoCleanupDays": 90, ... } }
+  // Supports partial update (omit fields you don't want to change).
+  // Unknown keys are rejected with 400 INVALID_SETTINGS_KEY.
   fastify.put('/api/admin/settings/system', {
     bodyLimit: 65536, // 64KB
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const parsed = systemSettingsSchema.safeParse(request.body)
+    const parsed = systemSettingsWrapperSchema.safeParse(request.body)
     if (!parsed.success) {
+      const firstIssue = parsed.error.issues[0]
+      // If the error is from .strict() (unrecognized key), use a specific code
+      const isUnrecognized = firstIssue?.code === 'unrecognized_keys'
       return reply.status(400).send({
         success: false,
-        error: { code: 'INVALID_SPARK_URL', message: '参数格式错误，应为 key-value 对象' },
+        error: {
+          code: isUnrecognized ? 'INVALID_SETTINGS_KEY' : 'INVALID_SPARK_URL',
+          message: isUnrecognized
+            ? `未知的配置项: ${(firstIssue as any).keys?.join?.(', ') || 'unknown'}`
+            : firstIssue?.message || '参数校验失败',
+        },
       })
     }
 
-    await settingsService.updateSettings(parsed.data)
+    await settingsService.updateSettings(parsed.data.settings)
 
     // Audit log
     const adminUser = (request as any).adminUser
@@ -366,13 +393,13 @@ export async function adminRoutes(fastify: FastifyInstance) {
         adminUserId: adminUser.sub,
         action: 'update_system_settings',
         targetType: 'system_setting',
-        detailJson: JSON.stringify({ keys: Object.keys(parsed.data) }),
+        detailJson: JSON.stringify({ keys: Object.keys(parsed.data.settings) }),
       },
     })
 
     await logService.write('info', 'admin', 'System settings updated', {
       adminUsername: adminUser.username,
-      keys: Object.keys(parsed.data),
+      keys: Object.keys(parsed.data.settings),
     })
 
     const settings = await settingsService.getAllSettings()

@@ -5,6 +5,7 @@ import { reportService } from '../reports/report.service.js'
 import { hashClientIp } from '../../utils/crypto.js'
 import { getClientIp } from '../../utils/ip.js'
 import { AppError } from '../../utils/errors.js'
+import { publicRateLimitService } from './public-rate-limit.service.js'
 
 const analyzeSchema = z.object({
   url: z.string().min(1).max(2048),
@@ -19,6 +20,19 @@ export function setQueueService(qs: typeof _queueService) {
 
 export async function publicRoutes(fastify: FastifyInstance) {
   // POST /api/public/analyze — Submit spark URL for analysis
+  //
+  // Execution order (consistent with design):
+  //   BodyLimit (1KB) → Fastify rate-limit → Zod → clientIpHash →
+  //   Business rate-limit (per-minute + per-day) → SparkUrlParser →
+  //   ReportService.findOrCreateReport → enqueue
+  //
+  // Rate-limit design:
+  //   - Per-minute limit: checked on EVERY POST /analyze call (including reuse).
+  //   - Per-day limit:   checked on EVERY POST /analyze call (conservative —
+  //     even reuse attempts are blocked if the daily cap is reached, which is
+  //     acceptable because a user that exhausts their daily quota should wait).
+  //   - Limits are read from SystemSetting: publicRateLimitPerMinute (default 5)
+  //     and publicRateLimitPerDay (default 30).
   fastify.post('/api/public/analyze', {
     bodyLimit: 1024, // 1KB body limit
   }, async (request: FastifyRequest, reply: FastifyReply) => {
@@ -34,12 +48,18 @@ export async function publicRoutes(fastify: FastifyInstance) {
       })
     }
 
-    // Parse spark URL
+    // Parse spark URL (validates https + spark.lucko.me + extracts code)
     const sparkUrl = parseSparkUrl(parsed.data.url)
 
-    // Client IP hash
+    // Client IP hash (does NOT store plaintext IP)
     const ip = getClientIp(request)
     const ipHash = hashClientIp(ip)
+
+    // Business rate limiting (per-minute + per-day)
+    // Checked before findOrCreateReport so we don't create a report if limits are hit.
+    // isNewReport=true means we check BOTH per-minute and per-day limits.
+    // (Conservative: even reuse attempts are blocked if daily limit is exceeded.)
+    await publicRateLimitService.checkPublicAnalyzeLimit(ipHash, true)
 
     // Find or create report
     const result = await reportService.findOrCreateReport(sparkUrl.code, ipHash)

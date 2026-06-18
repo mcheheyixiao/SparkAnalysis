@@ -97,6 +97,7 @@ npm start
 > ```bash
 > node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 > ```
+> **重要：** `JWT_SECRET` 和 `ENCRYPTION_KEY` 绝对不能使用 `.env.example` 中的默认值。`ENCRYPTION_KEY` 是 AES-256-GCM 使用的 32 bytes base64 key，不是普通字符串。
 
 ## API 文档
 

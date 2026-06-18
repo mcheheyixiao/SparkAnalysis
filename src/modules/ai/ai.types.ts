@@ -33,10 +33,15 @@ export interface AiFixPlanItem {
   expected_effect: string
 }
 
+/**
+ * Runtime AI configuration passed to providers.
+ * NOTE: `apiKey` is the DECRYPTED plaintext key, NOT the DB-stored ciphertext.
+ * The DB field is still called `apiKeyEncrypted` in the Prisma schema.
+ */
 export interface AiConfig {
   provider: string
   baseUrl: string
-  apiKeyEncrypted: string
+  apiKey: string
   model: string
   temperature: number
   maxTokens: number

@@ -157,7 +157,7 @@ export class AiAnalysisService {
     return {
       provider: setting.provider,
       baseUrl: setting.baseUrl,
-      apiKeyEncrypted: apiKey,
+      apiKey: apiKey,
       model: setting.model,
       temperature: setting.temperature,
       maxTokens: setting.maxTokens,
