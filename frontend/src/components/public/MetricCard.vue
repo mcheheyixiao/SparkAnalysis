@@ -1,7 +1,7 @@
 <template>
   <div class="metric-card" :class="{ clickable: !!clickable }" @click="$emit('click')">
     <div class="metric-label">{{ label }}</div>
-    <div class="metric-value">{{ value }}</div>
+    <div class="metric-value">{{ displayValue }}</div>
     <div class="metric-unit" v-if="unit">{{ unit }}</div>
     <div class="metric-trend" v-if="trend" :class="trend">
       <n-icon size="12">
@@ -12,17 +12,107 @@
 </template>
 
 <script setup lang="ts">
-defineProps<{
+import { ref, watch, onBeforeUnmount } from 'vue'
+import { gsap } from '@/plugins/gsap'
+
+// ---- Pure utility functions ----
+
+interface ParsedNumber {
+  numeric: number
+  unit: string
+  rawNumber: string
+  isAnimatable: boolean
+  raw: string
+}
+
+function parseNumericValue(raw: string | number): ParsedNumber {
+  const str = String(raw).trim()
+
+  // Strict: only accept "42", "19.8", "-3.5", "42 ms", "19.8 TPS"
+  // Reject: "12.3.4", ".5", "abc123"
+  const match = str.match(/^(-?\d+(?:\.\d+)?)\s*(.*)$/)
+  if (!match) {
+    return { numeric: 0, unit: '', rawNumber: '', isAnimatable: false, raw: str }
+  }
+
+  const rawNumber = match[1]
+  const numeric = parseFloat(rawNumber)
+  const unit = match[2]
+
+  if (isNaN(numeric)) {
+    return { numeric: 0, unit: '', rawNumber: '', isAnimatable: false, raw: str }
+  }
+
+  return { numeric, unit, rawNumber, isAnimatable: true, raw: str }
+}
+
+function getDecimalPlaces(rawNumber: string): number {
+  if (!rawNumber.includes('.')) return 0
+  return Math.min(rawNumber.split('.')[1].length, 2)
+}
+
+function getPrefersReducedMotion(): boolean {
+  if (typeof window === 'undefined') return false
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
+// ---- Props & Emits ----
+
+const props = defineProps<{
   label: string
   value: string | number
   unit?: string
   trend?: 'up' | 'down' | 'stable'
   clickable?: boolean
+  animateValue?: boolean
 }>()
 
 defineEmits<{
   click: []
 }>()
+
+// ---- Number counting animation ----
+
+const prefersReduced = getPrefersReducedMotion()
+const displayValue = ref<string | number>(props.value)
+let tween: gsap.core.Tween | null = null
+
+function animate() {
+  tween?.kill()
+
+  const parsed = parseNumericValue(props.value)
+
+  if (!parsed.isAnimatable || !props.animateValue || prefersReduced) {
+    displayValue.value = props.value
+    return
+  }
+
+  const decimalPlaces = getDecimalPlaces(parsed.rawNumber)
+
+  tween = gsap.to(
+    { val: 0 },
+    {
+      val: parsed.numeric,
+      duration: 0.8,
+      ease: 'power2.out',
+      onUpdate() {
+        const v = (this.targets() as Array<{ val: number }>)[0].val
+        const rounded = decimalPlaces > 0
+          ? v.toFixed(decimalPlaces)
+          : String(Math.round(v))
+        displayValue.value = parsed.unit
+          ? `${rounded} ${parsed.unit}`
+          : rounded
+      },
+    }
+  )
+}
+
+watch(() => props.value, animate, { immediate: true })
+
+onBeforeUnmount(() => {
+  tween?.kill()
+})
 </script>
 
 <style scoped>
