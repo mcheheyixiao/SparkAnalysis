@@ -92,6 +92,12 @@ export { gsap, ScrollTrigger }
   opacity: 0;
 }
 
+.reveal-section {
+  opacity: 0;
+  transform: translateY(var(--reveal-distance));
+  will-change: opacity, transform;
+}
+
 /* ===== App.vue Route Transition ===== */
 .page-fade-enter-active,
 .page-fade-leave-active {
@@ -123,6 +129,9 @@ export { gsap, ScrollTrigger }
 - **必须**在 `main.ts` 中全局引入：`import '@/styles/animations.css'`
 - 使用 `transform` 而非 `translate` 属性（兼容性更稳）
 - `will-change` 提示浏览器优化合成层
+- `.reveal-item` — 标准入场：opacity + translateY 从隐藏到可见，用于 stagger 入场和 ScrollTrigger 揭示
+- `.reveal-item-fade-only` — 仅 opacity 从 0 到 1，无位移。复用 `useRevealAnimation` 时传入 `y: 0` 即可，CSS 不设 transform 因此不会产生位移
+- `.reveal-section` — ReportPage 各 section 卡片的 ScrollTrigger 初始隐藏态（结构同 `.reveal-item`，语义独立便于维护）
 
 ### 2.3 `main.ts` 修改
 
@@ -447,18 +456,26 @@ let scrollCtx: gsap.Context | null = null
 const dataReady = computed(() => !!aiResult.value)
 
 function initScrollReveal() {
-  if (!sectionRef.value || prefersReduced) return
+  if (!sectionRef.value) return
+
+  const sections = gsap.utils.toArray<HTMLElement>(
+    '.reveal-section',
+    sectionRef.value!
+  )
+
+  // CRITICAL: reduced-motion must make sections visible, not leave them hidden
+  if (prefersReduced) {
+    gsap.set(sections, { opacity: 1, y: 0 })
+    return
+  }
+
   scrollCtx?.revert()
 
+  // sections already resolved above, reuse inside context
+  const targets = sections
+
   scrollCtx = gsap.context(() => {
-    const sections = gsap.utils.toArray<HTMLElement>(
-      '.reveal-section',
-      sectionRef.value!
-    )
-
-    if (sections.length === 0) return
-
-    sections.forEach((section) => {
+    targets.forEach((section) => {
       gsap.to(section, {
         opacity: 1,
         y: 0,
