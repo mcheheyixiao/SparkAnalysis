@@ -2,6 +2,13 @@
   <div class="system-settings-page">
     <page-header title="系统设置" subtitle="管理全局系统配置" />
 
+    <n-alert
+      v-if="!settingsFromSeed"
+      type="warning"
+      title="当前未读取到后端系统设置，已展示前端默认值。请确认首次部署已执行 npm run prisma:seed。"
+      style="margin-bottom: 16px"
+    />
+
     <n-card :bordered="true">
       <n-form :model="form" label-placement="left" label-width="200px">
         <setting-card title="数据存储">
@@ -103,11 +110,15 @@ const form = ref<SystemSettings>({
 
 const saving = ref(false)
 
+const settingsFromSeed = ref(false)
+
 async function loadSettings() {
   try {
     const data = await getSystemSettings()
     if (data.settings) {
-      form.value.settings = { ...data.settings }
+      const hasKeys = Object.keys(data.settings).length > 0
+      settingsFromSeed.value = hasKeys
+      form.value.settings = { ...form.value.settings, ...data.settings }
     }
   } catch (e) {
     if (e instanceof ApiError) {

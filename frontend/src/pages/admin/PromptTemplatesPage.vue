@@ -36,6 +36,17 @@
       :row-key="(r: PromptTemplate) => r.id"
     />
 
+    <!-- Empty state -->
+    <n-empty
+      v-if="!loading && prompts.length === 0"
+      description="暂无 Prompt 模板，请确认已执行 npm run prisma:seed。"
+      style="margin-top: 24px"
+    >
+      <template #extra>
+        <n-button size="small" @click="loadPrompts">重新加载</n-button>
+      </template>
+    </n-empty>
+
     <!-- Create/Edit Modal -->
     <n-modal v-model:show="showCreate" preset="card" :title="editingId ? '编辑模板' : '新建模板'" style="max-width: 720px">
       <n-form :model="editForm" label-placement="top">

@@ -22,6 +22,7 @@
 
 - Node.js 20 LTS
 - npm 10+
+- 后端已执行 `npm run prisma:seed`（后台系统设置与 Prompt 模板依赖后端 seed 数据）
 
 ### 安装
 
