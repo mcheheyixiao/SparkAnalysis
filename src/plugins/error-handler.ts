@@ -32,7 +32,7 @@ export async function registerErrorHandler(fastify: FastifyInstance) {
     }
 
     // Narrow remaining errors to access runtime properties
-    const err = error as Error & { validation?: unknown; statusCode?: number; message: string }
+    const err = error as Error & { validation?: unknown; statusCode?: number; message: string; code?: string }
 
     // Fastify validation errors
     if (err.validation) {
@@ -41,6 +41,18 @@ export async function registerErrorHandler(fastify: FastifyInstance) {
         error: {
           code: 'VALIDATION_ERROR',
           message: err.message || '请求参数验证失败',
+          requestId,
+        },
+      })
+    }
+
+    // Fastify framework errors with their own status codes (e.g. body/content-type/content-length)
+    if (err.code?.startsWith('FST_') && err.statusCode) {
+      return reply.status(err.statusCode).send({
+        success: false,
+        error: {
+          code: 'BAD_REQUEST',
+          message: err.message || '请求格式错误',
           requestId,
         },
       })
