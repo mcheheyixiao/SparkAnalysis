@@ -532,28 +532,35 @@ export class ReportService {
   async cleanup(olderThanDays: number, dryRun: boolean) {
     const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000)
 
-    // Find reports where expiresAt is set and past due, OR created before cutoff without expiresAt
-    const matched = await prisma.sparkReport.count({
-      where: {
-        OR: [
-          { expiresAt: { not: null, lt: new Date() } },
-          { expiresAt: null, createdAt: { lt: cutoff } },
-        ],
-      },
+    // Find expired reports — exclude pending/processing jobs that are still alive
+    const notInStatuses: string[] = ['pending', 'processing']
+    const where = {
+      status: { notIn: notInStatuses },
+      OR: [
+        { expiresAt: { not: null, lt: new Date() } },
+        { expiresAt: null, createdAt: { lt: cutoff } },
+      ],
+    }
+
+    const matched = await prisma.sparkReport.count({ where })
+
+    // Count how many of the matched reports have an AnalysisResult (cascade-deleted)
+    const matchedAnalysisResults = await prisma.sparkReport.count({
+      where: { ...where, analysisResult: { isNot: null } },
     })
 
     if (!dryRun && matched > 0) {
-      await prisma.sparkReport.deleteMany({
-        where: {
-          OR: [
-            { expiresAt: { not: null, lt: new Date() } },
-            { expiresAt: null, createdAt: { lt: cutoff } },
-          ],
-        },
-      })
+      // Cascade delete removes AnalysisResult rows automatically
+      await prisma.sparkReport.deleteMany({ where })
     }
 
-    return { matched, deleted: dryRun ? 0 : matched, dryRun }
+    return {
+      matched,
+      deleted: dryRun ? 0 : matched,
+      matchedAnalysisResults,
+      deletedAnalysisResults: dryRun ? 0 : matchedAnalysisResults,
+      dryRun,
+    }
   }
 
   async getStatus(reportId: string) {

@@ -27,6 +27,22 @@
           </n-form-item>
         </setting-card>
 
+        <setting-card title="历史数据清理">
+          <n-form-item label="清理操作">
+            <div class="cleanup-section">
+              <p class="cleanup-desc">清理已超过保留期限的分析报告和关联结果。该操作不会删除系统设置、Prompt 模板、AI 配置或管理员账号。</p>
+              <p class="cleanup-hint">系统会先进行预检查，显示预计清理数量，确认后才会真正删除。</p>
+              <n-button
+                type="warning"
+                :loading="cleaning"
+                @click="handleCleanup"
+              >
+                清理过期分析数据
+              </n-button>
+            </div>
+          </n-form-item>
+        </setting-card>
+
         <setting-card title="Spark 抓取">
           <n-form-item label="抓取超时">
             <n-input-number v-model:value="form.settings.sparkFetchTimeoutMs" :min="1000" :max="60000" :step="1000" style="width: 160px" />
@@ -79,9 +95,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { useMessage } from 'naive-ui'
-import { getSystemSettings, updateSystemSettings } from '@/api/admin-api'
+import { ref, onMounted, h } from 'vue'
+import { useMessage, useDialog } from 'naive-ui'
+import { getSystemSettings, updateSystemSettings, cleanupReports } from '@/api/admin-api'
 import type { SystemSettings } from '@/api/types'
 import { ApiError } from '@/api/http'
 import { getErrorMessage } from '@/utils/format'
@@ -89,6 +105,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import SettingCard from '@/components/admin/SettingCard.vue'
 
 const message = useMessage()
+const dialog = useDialog()
 
 const form = ref<SystemSettings>({
   settings: {
@@ -109,6 +126,7 @@ const form = ref<SystemSettings>({
 })
 
 const saving = ref(false)
+const cleaning = ref(false)
 
 const settingsFromSeed = ref(false)
 
@@ -142,6 +160,78 @@ async function handleSave() {
   }
 }
 
+async function handleCleanup() {
+  cleaning.value = true
+  const days = form.value.settings.autoCleanupDays
+
+  // Step 1: dryRun — pre-check
+  let dryResult
+  try {
+    dryResult = await cleanupReports({ olderThanDays: days, dryRun: true })
+  } catch (e) {
+    if (e instanceof ApiError) {
+      message.error(getErrorMessage(e.code))
+    } else {
+      message.error('网络异常，请稍后重试。')
+    }
+    cleaning.value = false
+    return
+  }
+
+  const matchedReports = dryResult.matched || 0
+  const matchedAnalysis = dryResult.matchedAnalysisResults || 0
+  const matchedLogs = dryResult.matchedLogs || 0
+
+  // Step 2: if nothing to clean, show info and stop
+  if (matchedReports === 0) {
+    dialog.info({
+      title: '清理过期分析数据',
+      content: '当前没有需要清理的过期数据。',
+      positiveText: '确定',
+    })
+    cleaning.value = false
+    return
+  }
+
+  // Step 3: confirm dialog
+  const d = dialog.warning({
+    title: '确认清理过期分析数据？',
+    content: () => {
+      const items = [
+        h('li', `分析报告：${matchedReports} 条`),
+        h('li', `AI 分析结果：${matchedAnalysis} 条`),
+      ]
+      if (matchedLogs > 0) {
+        items.push(h('li', `系统日志：${matchedLogs} 条`))
+      }
+      return h('div', [
+        h('p', '本次预计清理：'),
+        h('ul', { style: { paddingLeft: '20px' } }, items),
+        h('p', { style: { marginTop: '12px', color: 'var(--n-text-color-3, #999)' } },
+          '该操作不会删除系统设置、Prompt 模板、AI 配置或管理员账号。'),
+        h('p', { style: { color: 'var(--n-text-color-3, #999)' } },
+          '建议在低峰期执行。'),
+      ])
+    },
+    positiveText: '确认清理',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        const execResult = await cleanupReports({ olderThanDays: days, dryRun: false })
+        message.success(`清理完成：已删除 ${execResult.deleted || 0} 条分析报告。`)
+      } catch (e) {
+        if (e instanceof ApiError) {
+          message.error(getErrorMessage(e.code))
+        } else {
+          message.error('清理失败，请稍后重试。')
+        }
+      }
+    },
+  })
+
+  cleaning.value = false
+}
+
 onMounted(loadSettings)
 </script>
 
@@ -150,5 +240,22 @@ onMounted(loadSettings)
   margin-left: 8px;
   font-size: 0.8rem;
   color: var(--text-secondary);
+}
+
+.cleanup-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cleanup-desc,
+.cleanup-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.cleanup-hint {
+  font-size: 0.8rem;
 }
 </style>

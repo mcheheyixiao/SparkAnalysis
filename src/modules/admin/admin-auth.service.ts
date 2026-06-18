@@ -123,6 +123,48 @@ export class AdminAuthService {
     return { success: true }
   }
 
+  async changePassword(adminUserId: string, currentPassword: string, newPassword: string) {
+    const user = await prisma.adminUser.findUnique({ where: { id: adminUserId } })
+
+    if (!user || !user.enabled) {
+      throw new AppError('UNAUTHORIZED', '用户不存在或已被禁用')
+    }
+
+    const valid = await bcrypt.compare(currentPassword, user.passwordHash)
+    if (!valid) {
+      throw new AppError('INVALID_CURRENT_PASSWORD', '当前密码错误')
+    }
+
+    const same = await bcrypt.compare(newPassword, user.passwordHash)
+    if (same) {
+      throw new AppError('PASSWORD_UNCHANGED', '新密码不能与当前密码相同')
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 12)
+
+    await prisma.adminUser.update({
+      where: { id: user.id },
+      data: { passwordHash },
+    })
+
+    await prisma.adminAuditLog.create({
+      data: {
+        id: randomUUID(),
+        adminUserId: user.id,
+        action: 'change_password',
+        targetType: 'admin_user',
+        targetId: user.id,
+      },
+    })
+
+    await logService.write('info', 'auth', 'Admin password changed', {
+      adminUserId: user.id,
+      username: user.username,
+    })
+
+    return { changed: true }
+  }
+
   verifyToken(token: string): JwtPayload {
     try {
       return jwt.verify(token, env.JWT_SECRET) as JwtPayload

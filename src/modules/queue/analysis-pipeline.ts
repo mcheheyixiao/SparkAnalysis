@@ -22,24 +22,41 @@ class AnalysisPipeline {
 
       const rawData = await sparkFetcher.fetchRawMetadata(sparkCode)
 
+      // For sampler/profiler or unknown report types, try to fetch full data
+      // to get more complete thread/source information.
+      let normalizedInput = rawData
+      if (rawData.reportType === 'sampler' || rawData.reportType === 'unknown') {
+        try {
+          const fullJson = await sparkFetcher.fetchFullData(sparkCode)
+          normalizedInput = sparkFetcher.mergeRawAndFull(rawData, fullJson)
+        } catch {
+          // Full fetch failure is non-fatal — continue with raw metadata only
+          await logService.write('warn', 'pipeline', 'Full data fetch failed, continuing with raw metadata', {
+            reportId,
+            sparkCode,
+            reportType: rawData.reportType,
+          })
+        }
+      }
+
       // Save raw if enabled
       const saveRaw = await settingsService.getBoolean('saveRawSparkData')
-      const rawJson = saveRaw ? safeJsonStringify(rawData.rawJson) : null
+      const rawJson = saveRaw ? safeJsonStringify(normalizedInput.rawJson) : null
 
       await reportService.updateStage(reportId, {
-        platform: rawData.platform,
-        minecraftVersion: rawData.minecraftVersion,
-        sparkVersion: rawData.sparkVersion,
-        serverBrand: rawData.serverBrand,
-        reportType: rawData.reportType,
-        durationSeconds: rawData.durationSeconds,
+        platform: normalizedInput.platform,
+        minecraftVersion: normalizedInput.minecraftVersion,
+        sparkVersion: normalizedInput.sparkVersion,
+        serverBrand: normalizedInput.serverBrand,
+        reportType: normalizedInput.reportType,
+        durationSeconds: normalizedInput.durationSeconds,
         rawMetadataJson: rawJson,
       })
 
       // ---- Stage 2: Normalizing (progress=30) ----
       await reportService.updateStage(reportId, { stage: 'normalizing', progress: 30 })
 
-      const normalized = sparkNormalizer.normalize(rawData)
+      const normalized = sparkNormalizer.normalize(normalizedInput)
       const saveNormalized = await settingsService.getBoolean('saveNormalizedSummary')
 
       await reportService.updateStage(reportId, {
@@ -58,7 +75,7 @@ class AnalysisPipeline {
       // ---- Stage 4: Building prompt (progress=60) ----
       await reportService.updateStage(reportId, { stage: 'building_prompt', progress: 60 })
 
-      const prompts = await promptBuilder.build(normalized, ruleAnalysis, rawData.reportType)
+      const prompts = await promptBuilder.build(normalized, ruleAnalysis, normalizedInput.reportType)
 
       // ---- Stage 5: Calling AI (progress=80) ----
       await reportService.updateStage(reportId, { stage: 'calling_ai', progress: 80 })
@@ -66,7 +83,7 @@ class AnalysisPipeline {
       const aiOutput = await aiAnalysisService.analyzeWithPrompts(
         normalized,
         ruleAnalysis,
-        rawData.reportType,
+        normalizedInput.reportType,
         prompts,
       )
 

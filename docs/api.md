@@ -894,7 +894,31 @@
 
 - **Auth:** `Authorization: Bearer <token>`
 
-**Request Body:**
+**Request Body (预检查):**
+
+```json
+{
+  "olderThanDays": 30,
+  "dryRun": true
+}
+```
+
+**Response (dryRun=true — 只统计，不删除):**
+
+```json
+{
+  "success": true,
+  "data": {
+    "matched": 12,
+    "deleted": 0,
+    "matchedAnalysisResults": 12,
+    "deletedAnalysisResults": 0,
+    "dryRun": true
+  }
+}
+```
+
+**Request Body (真实清理):**
 
 ```json
 {
@@ -903,18 +927,27 @@
 }
 ```
 
-**Response (200):**
+**Response (dryRun=false — 实际删除):**
 
 ```json
 {
   "success": true,
   "data": {
-    "matched": 15,
-    "deleted": 15,
+    "matched": 12,
+    "deleted": 12,
+    "matchedAnalysisResults": 12,
+    "deletedAnalysisResults": 12,
     "dryRun": false
   }
 }
 ```
+
+**说明：**
+- `dryRun=true` 只统计，不删除。
+- `dryRun=false` 才会执行删除。
+- `pending` / `processing` 状态的报告不会被清理。
+- `olderThanDays` 默认为 30 天。
+- 删除 SparkReport 时会级联删除关联的 AnalysisResult。
 
 ---
 

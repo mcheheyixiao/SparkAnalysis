@@ -44,6 +44,7 @@ export class PromptBuilder {
       sourceData: safeJsonStringify(normalized.profiler.sources),
       ruleAnalysis: safeJsonStringify(ruleAnalysis),
       limitations: safeJsonStringify(normalized.limitations),
+      debugInfo: safeJsonStringify(normalized.debug || {}),
     }
 
     let prompt = template || this.defaultUserPrompt()
@@ -82,6 +83,7 @@ export class PromptBuilder {
 来源分析：{{sourceData}}
 规则预分析：{{ruleAnalysis}}
 数据限制：{{limitations}}
+后端解析调试信息：{{debugInfo}}
 
 请生成中文诊断报告，输出严格 JSON 格式。`
   }

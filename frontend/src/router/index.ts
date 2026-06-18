@@ -65,6 +65,11 @@ const router = createRouter({
           name: 'admin-logs',
           component: () => import('@/pages/admin/LogsPage.vue'),
         },
+        {
+          path: 'account/password',
+          name: 'admin-change-password',
+          component: () => import('@/pages/admin/ChangePasswordPage.vue'),
+        },
       ],
     },
     {

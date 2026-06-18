@@ -71,6 +71,19 @@ const cleanupSchema = z.object({
   dryRun: z.boolean().default(false),
 })
 
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1).max(128),
+  newPassword: z.string()
+    .min(8, '新密码至少 8 位')
+    .max(128, '新密码不能超过 128 位')
+    .regex(/[A-Za-z]/, '新密码至少包含一个字母')
+    .regex(/[0-9]/, '新密码至少包含一个数字'),
+  confirmPassword: z.string().min(1).max(128),
+}).refine((data) => data.newPassword === data.confirmPassword, {
+  message: '两次输入的新密码不一致',
+  path: ['confirmPassword'],
+})
+
 const testAiSchema = z.object({
   provider: z.string().max(32).optional(),
   baseUrl: z.string().max(512).optional(),
@@ -118,6 +131,33 @@ export async function adminRoutes(fastify: FastifyInstance) {
     const adminUser = (request as any).adminUser
     const user = await adminAuthService.getMe(adminUser.sub)
     return reply.send({ success: true, data: { user } })
+  })
+
+  // PUT /api/admin/auth/password
+  fastify.put('/api/admin/auth/password', async (request: FastifyRequest, reply: FastifyReply) => {
+    const parsed = changePasswordSchema.safeParse(request.body)
+    if (!parsed.success) {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: 'INVALID_PASSWORD_INPUT',
+          message: parsed.error.issues[0]?.message || '参数校验失败',
+          detail: parsed.error.issues,
+        },
+      })
+    }
+
+    const adminUser = (request as any).adminUser
+    const result = await adminAuthService.changePassword(
+      adminUser.sub,
+      parsed.data.currentPassword,
+      parsed.data.newPassword,
+    )
+
+    return reply.send({
+      success: true,
+      data: result,
+    })
   })
 
   // ========================

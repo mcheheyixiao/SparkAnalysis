@@ -26,8 +26,16 @@ export class SparkRuleAnalyzer {
     // Determine severity
     const severity = this.determineSeverity(evidence)
 
+    // Check data adequacy
+    const insufficientData = !this.hasEnoughData(normalized)
+
     // Build summary
-    const summary = this.buildSummary(severity, evidence, suspectedCauses)
+    const summary = this.buildSummary(severity, evidence, suspectedCauses, insufficientData)
+
+    // If data is insufficient, add explicit limitation
+    if (insufficientData) {
+      limitations.push('报告数据解析不足，无法确认是否存在性能问题')
+    }
 
     return {
       severity,
@@ -265,11 +273,34 @@ export class SparkRuleAnalyzer {
     return 'normal'
   }
 
+  /**
+   * Check if there's enough data to make a meaningful analysis.
+   * Returns false if all data channels are empty.
+   */
+  private hasEnoughData(normalized: NormalizedSummary): boolean {
+    const health = normalized.health
+    const profiler = normalized.profiler
+
+    // Check health data
+    const hasHealthData = !!(
+      health.tps || health.mspt || health.memory || health.cpu || health.gc
+    )
+
+    // Check profiler data
+    const hasProfilerData = !!(
+      profiler.threads.length > 0 || profiler.sources.length > 0
+    )
+
+    return hasHealthData || hasProfilerData
+  }
+
   private buildSummary(
     severity: string,
     evidence: RuleEvidence[],
     causes: SuspectedCause[],
+    insufficientData = false,
   ): string {
+    if (insufficientData) return '报告数据解析不足，无法确认是否存在性能问题'
     if (evidence.length === 0) return '未检测到明显性能问题'
     const top = evidence.filter(e => e.confidence === 'high').slice(0, 3)
     if (top.length > 0) {

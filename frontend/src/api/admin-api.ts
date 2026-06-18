@@ -20,6 +20,8 @@ import type {
   LogsQuery,
   CleanupRequest,
   CleanupResponse,
+  ChangePasswordRequest,
+  ChangePasswordResponse,
 } from './types'
 
 function extractData<T>(res: any): T {
@@ -42,6 +44,11 @@ export async function getMe(): Promise<AdminUser> {
   // Handle both response shapes
   if ('user' in data) return data.user
   return data as AdminUser
+}
+
+export async function changePassword(data: ChangePasswordRequest): Promise<ChangePasswordResponse> {
+  const res = await http.put('/admin/auth/password', data)
+  return extractData<ChangePasswordResponse>(res)
 }
 
 // AI Settings

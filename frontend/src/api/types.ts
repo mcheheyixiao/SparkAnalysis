@@ -281,8 +281,23 @@ export interface CleanupRequest {
   dryRun?: boolean
 }
 
+export interface ChangePasswordRequest {
+  currentPassword: string
+  newPassword: string
+  confirmPassword: string
+}
+
+export interface ChangePasswordResponse {
+  changed: boolean
+}
+
 export interface CleanupResponse {
   matched: number
   deleted: number
   dryRun: boolean
+  matchedAnalysisResults?: number
+  deletedAnalysisResults?: number
+  matchedLogs?: number
+  deletedLogs?: number
+  message?: string
 }

@@ -74,8 +74,9 @@ export const ERROR_MESSAGES: Record<string, string> = {
   INVALID_SETTINGS_INPUT: '系统设置参数无效',
   INVALID_SETTINGS_KEY: '系统设置参数无效',
   INVALID_PROMPT_INPUT: 'Prompt 模板参数无效',
-  INVALID_REPORT_QUERY: '报告查询参数无效',
+  INVALID_REPORT_QUERY: '清理参数无效',
   INTERNAL_ERROR: '服务器内部错误，请稍后再试',
+  NETWORK_ERROR: '网络异常，请稍后重试',
   PAYLOAD_TOO_LARGE: '请求体过大',
 }
 

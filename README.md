@@ -888,19 +888,55 @@ curl https://你的域名.com/api/health
 
 > **安全提醒：** 首次登录后请立即修改管理员密码，并在后台更新 `.env` 中的 `DEFAULT_ADMIN_PASSWORD` 为新的强密码（仅影响未来 seed 时的默认值）。
 
+### 修改管理员密码
+
+首次部署默认管理员来自：
+
+- `DEFAULT_ADMIN_USERNAME`（默认 `admin`）
+- `DEFAULT_ADMIN_PASSWORD`（默认 `change_me_now`）
+
+**注意：** 这些变量只在首次 `npm run prisma:seed` 创建管理员时生效。管理员已存在后，修改 `.env` 并重新 seed 不会自动改密码（`upsert` 的 `update: {}` 为空）。
+
+登录后台后可在右上角用户菜单 → **修改密码** 中修改密码。修改成功后会自动退出登录，需要使用新密码重新登录。
+
+### 管理后台入口
+
+出于安全和简洁考虑，首页不展示"管理后台"按钮。请通过直链访问：
+
+- **开发环境：** `http://localhost:5173/admin`
+- **生产环境：** `https://你的域名/admin`
+
+未登录时会自动跳转到 `/admin/login?redirect=/admin`，登录后进入后台仪表盘。
+
+后台「系统设置 → 数据存储」提供"清理过期分析数据"按钮。该按钮会先预检查可清理数量，管理员确认后才会删除。清理范围仅限过期分析报告及其关联分析结果，不会删除系统设置、Prompt 模板、AI 配置或管理员账号。
+
 ## 扩展指南
 
 ### 如何添加完整数据解析（?full=true）
 
-MVP 阶段默认只解析 `?raw=1` metadata。如需启用完整 spark 数据解析：
+系统已实现基础 full data 抓取和合并逻辑：
 
-1. **启用 full data 抓取 —** 在 `SystemSetting` 中将 `sparkFullMaxBytes` 配置适当大小（默认 30MB），然后在 `AnalysisPipeline` 中调用 `SparkFetcher.fetchFullData(sparkCode)` 替代 `fetchRawMetadata()`。
+- 当 spark 报告类型为 `sampler` 或 `unknown` 时，分析流水线会自动尝试抓取 `?raw=1&full=true` 完整数据。
+- full data 抓取失败不会中断整个分析，会降级为仅使用 raw metadata 继续分析。
+- 合并后的数据优先使用 full data 的类型识别、线程和来源信息。
 
-2. **扩展 SparkNormalizer —** 在 `src/modules/spark/spark-normalizer.service.ts` 中添加完整调用树（protobuf/flamegraph）解析逻辑。full data 包含每个线程的完整 stack trace 和方法耗时，可生成精确到方法级别的性能画像。
+如需进一步扩展完整调用树（protobuf/flamegraph）解析逻辑，可在 `src/modules/spark/spark-normalizer.service.ts` 中添加更多提取路径。
 
-3. **更新 Prompt —** 在 Prompt 模板中增加完整调用树数据的上下文说明，让 AI 能利用更丰富的数据维度。
+**注意流量控制：** full data 可能达到数十 MB，务必通过 `sparkFullMaxBytes` 系统设置配置合理上限（默认 30MB）。
 
-4. **注意流量控制 —** full data 可能达到数十 MB，务必在 `safe-fetch.ts` 中配置 `maxBytes` 限制（通过 `sparkFullMaxBytes` 系统设置）。
+### spark 报告数据不足说明
+
+如果分析报告显示"报告数据解析不足，无法确认是否存在性能问题"或"数据不足"，可能的原因：
+
+1. **后端提取问题：** spark 远端的 raw JSON 结构与后端解析路径不匹配，导致无法提取 TPS/MSPT/线程数据。可在后台分析记录中查看 `rawMetadataJson` / `normalizedJson` 字段，检查后端抓到的原始数据格式。
+2. **报告类型不匹配：** spark 链接对应的报告可能不是 health 或 sampler/profiler 类型（如 heap dump），后者缺乏性能指标数据。
+3. **报告本身无数据：** spark 远端的报告可能在采集时失败或数据为空。
+
+排查步骤：
+- 登录后台 → 分析记录 → 查看对应报告的 `rawMetadataJson`，确认 spark 远端确实返回了有效数据。
+- 查看 `normalizedJson` 中的 `debug.rawTopLevelKeys` 和 `debug.extractionHints` 字段，了解后端解析到的顶层字段和提取提示。
+- 如果 `debug.fullTopLevelKeys` 存在，说明系统已尝试抓取 full data。
+- 若 spark 远端报告本身缺失 sampler/health 数据，需重新采集 spark health 或 profiler 报告。
 
 ### 如何将队列替换为 BullMQ
 

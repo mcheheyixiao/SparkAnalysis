@@ -66,6 +66,11 @@ export interface NormalizedSummary {
     suspiciousMethods: SuspiciousMethod[]
   }
   limitations: string[]
+  debug?: {
+    rawTopLevelKeys: string[]
+    fullTopLevelKeys?: string[]
+    extractionHints: string[]
+  }
 }
 
 export interface NormalizedThread {

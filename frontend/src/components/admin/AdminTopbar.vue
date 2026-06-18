@@ -52,6 +52,16 @@ const userMenuOptions = [
     }),
   },
   {
+    label: '修改密码',
+    key: 'change-password',
+    icon: () => h(NIcon, null, {
+      default: () => h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, [
+        h('rect', { x: '3', y: '11', width: '18', height: '11', rx: '2', ry: '2' }),
+        h('path', { d: 'M7 11V7a5 5 0 0110 0v4' }),
+      ]),
+    }),
+  },
+  {
     label: '退出登录',
     key: 'logout',
     icon: () => h(NIcon, null, {
@@ -70,6 +80,8 @@ async function handleUserMenu(key: string) {
     router.push('/')
   } else if (key === 'home') {
     router.push('/')
+  } else if (key === 'change-password') {
+    router.push('/admin/account/password')
   }
 }
 </script>
