@@ -1,11 +1,39 @@
 import type { SparkRawData, NormalizedSummary, NormalizedThread, NormalizedSource } from './spark.types.js'
 
+interface SourceIndex {
+  classSources: Map<string, string>
+  methodSources: Map<string, string>
+  lineSources: Map<string, string> | undefined
+}
+
 export class SparkNormalizer {
   normalize(rawData: SparkRawData): NormalizedSummary {
     const limitations: string[] = []
     const raw = rawData.rawJson as any
     const metadata = raw?.metadata || raw || {}
     const full = raw?.full || {}
+
+    // Record full fetch failure
+    if (rawData.fullFetchFailed) {
+      const reason = rawData.fullFailReason || 'unknown'
+      if (reason.includes('too large') || reason.includes('maxBytes') || reason.includes('size')) {
+        limitations.push(
+          'full=true 数据拉取失败：响应体超过 sparkFullMaxBytes 限制，未能解析完整 profiler 调用树。当前分析只能基于 metadata 和部分摘要，无法精确定位具体方法来源。'
+        )
+      } else if (reason.includes('timeout') || reason.includes('abort')) {
+        limitations.push(
+          'full=true 数据拉取超时，未能解析完整 profiler 调用树。'
+        )
+      } else if (reason.includes('invalid') || reason.includes('parse') || reason.includes('JSON')) {
+        limitations.push(
+          'full=true 数据解析失败，未能读取完整 profiler 调用树。'
+        )
+      } else {
+        limitations.push(
+          `full=true 数据拉取失败：${reason}。未能解析完整 profiler 调用树。`
+        )
+      }
+    }
 
     // ---- Debug info (for AI prompt) ----
     const rawTopLevelKeys = this.getTopLevelKeys(raw)
@@ -242,6 +270,10 @@ export class SparkNormalizer {
     const sources: NormalizedSource[] = []
     const suspiciousMethods: NormalizedSummary['profiler']['suspiciousMethods'] = []
 
+    // Build source reverse index from classSources/methodSources/lineSources (full=true data)
+    // Must be built BEFORE parsing threads so methods can be annotated with source info.
+    const sourceIndex = this.buildSourceIndex(full)
+
     // --- Threads ---
     const rawThreads =
       raw?.sampler?.threads || raw?.profiler?.threads || raw?.threads
@@ -255,7 +287,7 @@ export class SparkNormalizer {
         // Array format: [{ name: "...", percent: 75, children: [...] }]
         for (const t of rawThreads) {
           if (!t) continue
-          const thread = this.parseThreadNode(t)
+          const thread = this.parseThreadNode(t, sourceIndex)
           if (thread) threads.push(thread)
         }
       } else {
@@ -268,7 +300,7 @@ export class SparkNormalizer {
           }
           const methods = data?.methods || data?.children || data?.nodes || []
           if (Array.isArray(methods) && methods.length > 0) {
-            thread.topMethods = methods.slice(0, 10).map((m: any) => this.parseMethodNode(m))
+            thread.topMethods = methods.slice(0, 10).map((m: any) => this.parseMethodNode(m, { sourceIndex }))
           }
           threads.push(thread)
         }
@@ -285,7 +317,7 @@ export class SparkNormalizer {
         const rootChildren = callTree?.root?.children || callTree?.children || callTree?.nodes || []
         if (Array.isArray(rootChildren)) {
           for (const child of rootChildren.slice(0, 20)) {
-            const thread = this.parseThreadNode(child)
+            const thread = this.parseThreadNode(child, sourceIndex)
             if (thread) threads.push(thread)
           }
         }
@@ -302,9 +334,6 @@ export class SparkNormalizer {
       || this.findFirstDeep<any>(raw, ['sources'])
       || this.findFirstDeep<any>(full, ['sources'])
 
-    // Build source reverse index from classSources/methodSources (full=true data)
-    const sourceIndex = this.buildSourceIndex(full)
-
     if (rawSources && typeof rawSources === 'object') {
       for (const [name, data] of Object.entries(rawSources) as [string, any][]) {
         // Compute source percent from thread methods that match this source
@@ -312,12 +341,12 @@ export class SparkNormalizer {
         let computedPercent: number | undefined = data?.percent ?? data?.totalPercent
 
         // If no explicit percent, try to compute from thread data
-        if (computedPercent == null && sourceIndex.size > 0) {
+        if (computedPercent == null && (sourceIndex.classSources.size > 0 || sourceIndex.methodSources.size > 0)) {
           const mainThread = threads.find(t => t.type === 'main' || t.name.toLowerCase().includes('server thread'))
           if (mainThread?.topMethods) {
             for (const m of mainThread.topMethods) {
-              const lookupKey = m.packageName ? `${m.packageName}.${m.name}`.replace(/\.+/g, '.') : m.name
-              const src = this.lookupSource(sourceIndex, lookupKey, m.name)
+              const fullName = m.packageName ? `${m.packageName}.${m.name}`.replace(/\.\./g, '.') : m.name
+              const src = this.lookupSource(sourceIndex, fullName, m.name, m.packageName)
               if (src === name) {
                 matchedMethods.push(m.name)
                 computedPercent = (computedPercent || 0) + (m.percent || 0)
@@ -353,7 +382,23 @@ export class SparkNormalizer {
     // Report source percentage limitations
     const sourcesWithPercent = sources.filter(s => s.totalPercent != null)
     if (sources.length > 0 && sourcesWithPercent.length === 0) {
-      limitations.push('来源列表已提取，但所有来源均缺少占比数据，无法判断各来源的真实开销权重')
+      // Check if we have method-level data at all
+      const allMethods = threads.flatMap(t => t.topMethods || [])
+      const methodsWithPercent = allMethods.filter(m => m.percent != null && m.percent > 0)
+      const nonMinecraftMethods = allMethods.filter(m =>
+        m.source && m.source !== 'minecraft' && m.source !== 'java' && m.source !== 'native' && m.source !== 'unknown'
+      )
+
+      if (methodsWithPercent.length > 0 && nonMinecraftMethods.length === 0) {
+        // We have method percents but they're all minecraft/java/native — cannot attribute to plugins/mods
+        limitations.push(
+          '所有热点方法均为原版 minecraft/Java/Native 方法，未发现具体插件/模组方法的显著占比。当前采样数据无法归因到特定插件或模组，建议使用 /spark profiler --timeout 120 采集更精确的 profiler 数据'
+        )
+      } else if (methodsWithPercent.length === 0) {
+        limitations.push('来源列表已提取，但所有来源均缺少占比数据，无法判断各来源的真实开销权重')
+      } else {
+        limitations.push('来源列表已提取，但来源占比与主线程方法关联不足，无法精确定位具体插件/模组开销')
+      }
     }
 
     // Report thread method detail limitations
@@ -362,9 +407,15 @@ export class SparkNormalizer {
       limitations.push('线程数据未包含方法级调用栈，无法定位具体热点方法')
     }
 
-    // If sources exist but none have thread evidence, note it
+    // If sources exist but none have thread evidence, note it — but only if we
+    // haven't already added a more specific limitation above
     if (sources.length > 0 && sourcesWithPercent.length === 0) {
-      limitations.push('缺少完整 profiler 调用树 + 来源占比数据，建议使用 /spark profiler --timeout 120 重新采集以获取方法级热点和精确占比')
+      const hasSpecificLimitation = limitations.some(l =>
+        l.includes('原版 minecraft') || l.includes('来源占比与主线程')
+      )
+      if (!hasSpecificLimitation) {
+        limitations.push('缺少完整 profiler 调用树 + 来源占比数据，建议使用 /spark profiler --timeout 120 重新采集以获取方法级热点和精确占比')
+      }
     }
 
     // Sampler vs profiler note
@@ -380,7 +431,7 @@ export class SparkNormalizer {
 
   // ========== Thread/Method parsing ==========
 
-  private parseThreadNode(node: any): NormalizedThread | null {
+  private parseThreadNode(node: any, sourceIndex?: SourceIndex): NormalizedThread | null {
     if (!node) return null
     const name = node?.name || node?.threadName || node?.thread || 'unknown'
     const percent = this.toNumber(node?.percent)
@@ -393,26 +444,51 @@ export class SparkNormalizer {
       totalPercent: percent,
     }
 
-    // Collect methods from the call tree (spark uses recursive children).
-    // Spark sampler nodes use { className, methodName, time, children, childrenRefs }.
+    // Collect methods from the call tree.
+    // Spark nodes use { className, methodName, time, times[], children, childrenRefs }.
     const children = node?.children || node?.nodes || node?.methods || []
     if (Array.isArray(children) && children.length > 0) {
-      // Walk the call tree to collect all methods with their times
+      // Walk the call tree to collect all methods with their effective times
       const allMethods = this.collectMethodsFromTree(children, 0)
-      // Sort by time descending, take top 30
-      allMethods.sort((a, b) => (b.time || 0) - (a.time || 0))
-      // Calculate total time for percent computation
-      const totalTime = allMethods.reduce((sum, m) => sum + (m.time || 0), 0)
-      thread.topMethods = allMethods.slice(0, 30).map(m => this.parseMethodNode(m, totalTime))
+      // Sort by priority first (root frames + idle last), then by effective time descending
+      allMethods.sort((a, b) => {
+        const priA = this.classifyMethodPriority(a)
+        const priB = this.classifyMethodPriority(b)
+        if (priA !== priB) return priB - priA // higher priority first
+        return (b._effectiveTime || 0) - (a._effectiveTime || 0)
+      })
+      // Calculate total time for percent computation:
+      // Use the sum of top-level children's effective times as denominator
+      const topLevelTime = children.reduce((sum: number, c: any) => {
+        return sum + this.extractNodeTime(c)
+      }, 0)
+      const totalTime = topLevelTime > 0 ? topLevelTime : allMethods.reduce((sum, m) => sum + (m._effectiveTime || 0), 0)
+      const context = { threadTotalTime: totalTime, sourceIndex }
+      thread.topMethods = allMethods.slice(0, 30).map(m => this.parseMethodNode(m, context))
     }
 
     return thread
   }
 
   /**
+   * Extract the effective time from a method node.
+   * Spark full data stores per-window sample counts in the "times" array.
+   * The "time" field is often 0. Summing "times" gives the actual sample count.
+   */
+  private extractNodeTime(node: any): number {
+    if (!node) return 0
+    // If times array exists, sum its values (per-window sample counts)
+    if (Array.isArray(node?.times) && node.times.length > 0) {
+      return node.times.reduce((sum: number, v: any) => sum + (typeof v === 'number' ? v : 0), 0)
+    }
+    // Fall back to time field
+    return this.toNumber(node?.time) ?? 0
+  }
+
+  /**
    * Recursively collect method nodes from the spark call tree.
-   * Each node has: className, methodName, time, children, childrenRefs
-   * Returns flat array with { className, methodName, time, children, ... }
+   * Each node has: className, methodName, time, times[], children, childrenRefs
+   * Returns flat array with _effectiveTime pre-computed from times[] array.
    */
   private collectMethodsFromTree(nodes: any[], depth: number): any[] {
     const result: any[] = []
@@ -421,7 +497,9 @@ export class SparkNormalizer {
 
     for (const node of nodes) {
       if (!node) continue
-      result.push(node)
+      // Attach effective time computed from times[] array
+      const effectiveTime = this.extractNodeTime(node)
+      result.push({ ...node, _effectiveTime: effectiveTime })
       const subChildren = node?.children || []
       if (Array.isArray(subChildren) && subChildren.length > 0) {
         result.push(...this.collectMethodsFromTree(subChildren, depth + 1))
@@ -430,26 +508,54 @@ export class SparkNormalizer {
     return result
   }
 
-  private parseMethodNode(node: any, totalTime?: number): any {
+  private parseMethodNode(node: any, context?: { threadTotalTime?: number; sourceIndex?: SourceIndex }): any {
     if (!node) return { name: 'unknown' }
-    // Spark sampler format: { className, methodName, time, ... }
-    // Other formats: { name, percent, ... }
-    const methodDisplayName = node?.methodName
-      ? `${node.className || ''}.${node.methodName}`.replace(/^\./, '')
-      : node?.name || node?.method || node?.className || 'unknown'
 
-    const pkgName = node?.packageName || node?.package || node?.className || undefined
+    const className = node?.className || node?.packageName || node?.package || undefined
+    const rawMethodName = node?.methodName || node?.method || node?.name || undefined
+
+    // Build display name: avoid className.className.methodName duplication.
+    // If rawMethodName already starts with className, use it as-is.
+    let methodDisplayName: string
+    if (rawMethodName && className && !rawMethodName.startsWith(className)) {
+      methodDisplayName = `${className}.${rawMethodName}`
+    } else if (rawMethodName) {
+      methodDisplayName = rawMethodName
+    } else if (className) {
+      methodDisplayName = className
+    } else {
+      methodDisplayName = node?.name || 'unknown'
+    }
+
+    // Use className as package name (not the source name)
+    const pkgName = className
 
     // Calculate percent from time
     let percent: number | undefined = this.toNumber(node?.percent) ?? this.toNumber(node?.totalPercent)
-    if (percent == null && totalTime != null && totalTime > 0 && this.toNumber(node?.time) != null) {
-      percent = (this.toNumber(node!.time)! / totalTime) * 100
+    const nodeTime = node?._effectiveTime ?? this.extractNodeTime(node)
+    if (percent == null && context?.threadTotalTime != null && context.threadTotalTime > 0 && nodeTime > 0) {
+      percent = (nodeTime / context.threadTotalTime) * 100
+      // Round to 2 decimal places
+      percent = Math.round(percent * 100) / 100
+      // Clamp to reasonable range
+      if (percent > 100) percent = 100
+      if (percent < 0.01 && percent > 0) percent = 0.01
+    }
+
+    // Source lookup
+    let source = node?.source || node?.origin || undefined
+    if (!source && context?.sourceIndex) {
+      source = this.lookupSource(context.sourceIndex, methodDisplayName, rawMethodName || methodDisplayName, className)
+    }
+    // Fallback: classify based on package/class name pattern when no explicit source mapping exists
+    if (!source && className) {
+      source = this.classifyMethodSource(className)
     }
 
     return {
       name: methodDisplayName,
       packageName: pkgName,
-      source: node?.source || node?.origin,
+      source,
       percent,
       selfPercent: this.toNumber(node?.selfPercent) ?? this.toNumber(node?.selfTimePercent),
       totalPercent: percent,
@@ -459,56 +565,125 @@ export class SparkNormalizer {
   // ========== Source-to-method mapping (from full=true classSources/methodSources) ==========
 
   /**
-   * Build a reverse index from class/method descriptor to source name.
-   * Spark full=true data has classSources and methodSources objects.
+   * Build a reverse index from class/method/line descriptor to source name.
+   * Spark full=true data has classSources, methodSources, and lineSources objects.
    */
-  private buildSourceIndex(full: any): Map<string, string> {
-    const index = new Map<string, string>()
+  private buildSourceIndex(full: any): SourceIndex {
+    const classSources = new Map<string, string>()
+    const methodSources = new Map<string, string>()
+    let lineSources: Map<string, string> | undefined
 
-    // classSources: maps class ref ID → source name
-    // e.g. { "1": "forge", "2": "minecraft", ... }
-    // But in JSON, it might be { "net.minecraft.server.MinecraftServer": "minecraft", ... }
-    const classSources = full?.classSources
-    if (classSources && typeof classSources === 'object') {
-      for (const [key, val] of Object.entries(classSources) as [string, any][]) {
+    // classSources: maps full class name → source/mod name
+    // e.g. { "net.minecraft.server.MinecraftServer": "minecraft", ... }
+    const csRaw = full?.classSources
+    if (csRaw && typeof csRaw === 'object') {
+      for (const [key, val] of Object.entries(csRaw) as [string, any][]) {
         if (typeof val === 'string') {
-          index.set(key, val)
+          classSources.set(key, val)
         }
       }
     }
 
     // methodSources: maps method descriptor → source name
-    const methodSources = full?.methodSources
-    if (methodSources && typeof methodSources === 'object') {
-      for (const [key, val] of Object.entries(methodSources) as [string, any][]) {
+    // e.g. { "net.minecraft.Util.m_137550_": "minecraft", ... }
+    const msRaw = full?.methodSources
+    if (msRaw && typeof msRaw === 'object') {
+      for (const [key, val] of Object.entries(msRaw) as [string, any][]) {
         if (typeof val === 'string') {
-          index.set(key, val)
+          methodSources.set(key, val)
         }
       }
     }
 
-    return index
+    // lineSources: maps line descriptor → source name (enhancement only)
+    const lsRaw = full?.lineSources
+    if (lsRaw && typeof lsRaw === 'object') {
+      lineSources = new Map<string, string>()
+      for (const [key, val] of Object.entries(lsRaw) as [string, any][]) {
+        if (typeof val === 'string') {
+          lineSources.set(key, val)
+        }
+      }
+    }
+
+    return { classSources, methodSources, lineSources }
   }
 
   /**
    * Look up which source a method belongs to.
-   * Tries exact match, then partial, then class-only match.
+   *
+   * Priority order:
+   *   1. methodSources exact match on fullMethodName
+   *   2. methodSources exact match on shortName (without className)
+   *   3. classSources exact match on the className portion of fullMethodName
+   *   4. classSources prefix match: fullMethodName starts with classKey + "."
+   *   5. lineSources prefix match (enhancement only, lower priority)
+   *   6. Package-based prefix match, excluding net/java/com/org roots
+   *   7. Return undefined
    */
-  private lookupSource(index: Map<string, string>, fullMethodName: string, shortName: string): string | undefined {
-    if (index.size === 0) return undefined
+  private lookupSource(index: SourceIndex, fullMethodName: string, methodNameOnly: string, className?: string): string | undefined {
+    if (!index) return undefined
+    if (!fullMethodName) return undefined
 
-    // Exact match
-    if (index.has(fullMethodName)) return index.get(fullMethodName)
-    if (index.has(shortName)) return index.get(shortName)
+    // 1. methodSources exact match on fullMethodName
+    if (index.methodSources.has(fullMethodName)) return index.methodSources.get(fullMethodName)
 
-    // Try matching by class name prefix
-    for (const [key, src] of index.entries()) {
-      if (fullMethodName.includes(key) || key.includes(fullMethodName.split('.')[0] || '')) {
+    // 2. methodSources exact match on shortName
+    if (methodNameOnly && index.methodSources.has(methodNameOnly)) return index.methodSources.get(methodNameOnly)
+
+    // 3. classSources exact match on the className
+    if (className && index.classSources.has(className)) return index.classSources.get(className)
+
+    // Also try extracting className from fullMethodName (last part before the method)
+    const extractedClassName = this.extractClassName(fullMethodName)
+    if (extractedClassName && index.classSources.has(extractedClassName)) {
+      return index.classSources.get(extractedClassName)
+    }
+
+    // 4. classSources prefix match: fullMethodName starts with classKey + "."
+    for (const [classKey, src] of index.classSources) {
+      if (fullMethodName.startsWith(classKey + '.')) {
         return src
       }
     }
 
+    // 5. lineSources prefix match (enhancement only, lower priority)
+    if (index.lineSources && index.lineSources.size > 0) {
+      for (const [lineKey, src] of index.lineSources) {
+        if (fullMethodName.startsWith(lineKey) || fullMethodName.includes(lineKey)) {
+          return src
+        }
+      }
+    }
+
+    // 6. Package-based prefix match (exclude net/java/com/org short roots)
+    const rootPkg = fullMethodName.split('.')[0] || ''
+    if (['net', 'java', 'com', 'org', 'io', 'dev', 'me', 'club', 'cn', 'de', 'fr', 'ru', 'xyz'].includes(rootPkg.toLowerCase())) {
+      // Only match if we have 3+ segments (e.g., net.minecraft.Something)
+      const segments = fullMethodName.split('.')
+      if (segments.length >= 3) {
+        const prefix3 = segments.slice(0, 3).join('.')
+        for (const [classKey, src] of index.classSources) {
+          if (prefix3 === classKey || classKey.startsWith(prefix3 + '.')) {
+            return src
+          }
+        }
+      }
+    }
+
     return undefined
+  }
+
+  /**
+   * Extract the class name from a full method name.
+   * "net.minecraft.Util.m_137550_" → "net.minecraft.Util"
+   * "native.[vdso]" → "native"
+   */
+  private extractClassName(fullMethodName: string): string | undefined {
+    if (!fullMethodName) return undefined
+    const lastDot = fullMethodName.lastIndexOf('.')
+    if (lastDot < 0) return undefined
+    return fullMethodName.substring(0, lastDot)
   }
 
   // ========== Helper utilities ==========
@@ -621,6 +796,86 @@ export class SparkNormalizer {
     return Object.keys(obj as object)
   }
 
+  /**
+   * Classify a method's source based on its className (package-based fallback).
+   * Used when no explicit classSources/methodSources entry exists.
+   */
+  private classifyMethodSource(className: string): string | undefined {
+    if (!className) return undefined
+    const lower = className.toLowerCase()
+
+    // Mod loaders — check before vanilla minecraft to avoid substring false matches
+    if (lower.startsWith('net.minecraftforge.')) return 'forge'
+    if (lower.startsWith('net.neoforged.')) return 'neoforge'
+    if (lower.startsWith('net.fabricmc.')) return 'fabric'
+
+    // Vanilla Minecraft
+    if (lower.startsWith('net.minecraft.') || lower.startsWith('com.mojang.')) return 'minecraft'
+
+    // Java standard library
+    if (lower.startsWith('java.') || lower.startsWith('jdk.') || lower.startsWith('sun.') || lower.startsWith('com.sun.') || lower.startsWith('javax.')) return 'java'
+
+    // Native / system libraries
+    if (lower === 'native' || lower.startsWith('lib') || lower.includes('[vdso]')) return 'native'
+
+    // Other known domains → likely plugin/mod
+    if (lower.startsWith('com.') || lower.startsWith('org.') || lower.startsWith('io.') || lower.startsWith('dev.') || lower.startsWith('net.') || lower.startsWith('me.') || lower.startsWith('club.')) return undefined // unknown mod/plugin, let classSources handle it
+
+    return undefined
+  }
+
+  /**
+   * Return a priority score for sorting. Higher = more actionable (shown first).
+   * Root frames and idle/wait methods get low priority so they don't dominate
+   * the top methods list in profiler data.
+   *
+   * Priority 2: Normal methods (potentially actionable hot spots)
+   * Priority 1: Idle/wait/native methods (park, sleep, wait, [vdso], libc)
+   * Priority 0: Root frames (MinecraftServer, Thread entry points — always on stack)
+   */
+  private classifyMethodPriority(node: any): number {
+    const className = (node?.className || '').toLowerCase()
+    const methodName = (node?.methodName || '').toLowerCase()
+    const fullName = className + '.' + methodName
+
+    // Priority 0: Root frames — always on the stack, never actionable
+    if (
+      className.startsWith('net.minecraft.server.minecraftserver') ||
+      className === 'net.minecraft.server.minecraftserver' ||
+      (className.startsWith('net.minecraft.server') && methodName.startsWith('lambda$spin')) ||
+      className.startsWith('java.lang.thread') ||
+      className.startsWith('java.lang.invoke.directmethodhandle') ||
+      className.startsWith('java.lang.invoke.invokers') ||
+      className.startsWith('java.lang.invoke.lambdaform') ||
+      className.startsWith('java.lang.invoke.methodhandle') ||
+      className.startsWith('java.util.concurrent.forkjoinworkerthread')
+    ) {
+      return 0
+    }
+
+    // Priority 1: Idle/wait/native methods — not hot spots
+    if (
+      fullName.includes('unsafe.park') ||
+      fullName.includes('locksupport.park') ||
+      fullName.includes('object.wait') ||
+      fullName.includes('thread.sleep') ||
+      fullName.includes('thread.yield') ||
+      fullName.includes('condition.await') ||
+      className === 'native' ||
+      className.startsWith('libc') ||
+      className.startsWith('libpthread') ||
+      methodName.includes('[vdso]') ||
+      methodName.includes('__kernel_') ||
+      // These are always-on-stack for idle servers
+      (className.startsWith('jdk.internal.misc') && methodName === 'park')
+    ) {
+      return 1
+    }
+
+    // Priority 2: Everything else — potentially actionable
+    return 2
+  }
+
   // ========== Thread/Source classification ==========
 
   private classifyThreadType(name: string): NormalizedThread['type'] {
@@ -657,6 +912,18 @@ export class SparkNormalizer {
     const isModded = ['forge', 'fabric', 'neoforge', 'quilt'].some(p => platform.includes(p))
     if (isModded && name.length > 0) {
       return 'mod'
+    }
+
+    // For non-modded platforms (Paper, Spigot, Bukkit, Purpur, etc.),
+    // simple-named sources without dots are plugins (e.g. luckperms, essentials).
+    const isPluginPlatform = ['paper', 'spigot', 'bukkit', 'purpur', 'pufferfish', 'folia', 'leaf'].some(p => platform.includes(p))
+    if (isPluginPlatform && name.length > 0) {
+      return 'plugin'
+    }
+
+    // Generic fallback: if name contains no dots and it's not java/minecraft, it's likely a mod or plugin
+    if (!name.includes('.') && name.length > 0) {
+      return 'plugin'
     }
 
     return 'unknown'

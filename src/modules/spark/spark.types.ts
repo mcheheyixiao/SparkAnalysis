@@ -15,6 +15,8 @@ export interface SparkRawData {
   serverBrand?: string
   durationSeconds?: number
   rawJson: unknown // the full raw JSON (not stored by default)
+  fullFetchFailed?: boolean
+  fullFailReason?: string
 }
 
 // ---- Normalized structured summary ----

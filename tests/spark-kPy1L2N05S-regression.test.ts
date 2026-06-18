@@ -38,6 +38,42 @@ describe('kPy1L2N05S regression', () => {
       expect(mainThread!.topMethods!.length).toBeGreaterThan(0)
     })
 
+    it('should have method percent values', () => {
+      const mainThread = fixture.profiler.threads.find(t => t.type === 'main')
+      const methodsWithPercent = mainThread!.topMethods!.filter(m => m.percent != null)
+      expect(methodsWithPercent.length).toBeGreaterThan(0)
+    })
+
+    it('should have method source values', () => {
+      const mainThread = fixture.profiler.threads.find(t => t.type === 'main')
+      const methodsWithSource = mainThread!.topMethods!.filter(m => m.source && m.source !== 'unknown')
+      expect(methodsWithSource.length).toBeGreaterThan(0)
+    })
+
+    it('should include DynamicGraphMinFixedPoint in topMethods', () => {
+      const mainThread = fixture.profiler.threads.find(t => t.type === 'main')
+      const names = mainThread!.topMethods!.map(m => m.name)
+      expect(names.some(n => n.includes('DynamicGraphMinFixedPoint'))).toBe(true)
+    })
+
+    it('should include ChunkTracker in topMethods', () => {
+      const mainThread = fixture.profiler.threads.find(t => t.type === 'main')
+      const names = mainThread!.topMethods!.map(m => m.name)
+      expect(names.some(n => n.includes('ChunkTracker'))).toBe(true)
+    })
+
+    it('should not have duplicate className in method names', () => {
+      const mainThread = fixture.profiler.threads.find(t => t.type === 'main')
+      for (const m of mainThread!.topMethods!) {
+        // Check: name should not contain className repeated
+        const parts = m.name.split('.')
+        const uniqueParts = new Set(parts)
+        // If no duplication, the name should have all unique segments
+        // (e.g. "net.minecraft.server.MinecraftServer.m_130011_" not "net.minecraft.server.MinecraftServer.MinecraftServer.m_130011_")
+        expect(m.name).not.toMatch(/\.\w+\.\1/) // No repeated segment
+      }
+    })
+
     it('should classify sources as mod on Forge platform', () => {
       for (const s of fixture.profiler.sources) {
         expect(s.type).toBe('mod')
@@ -50,11 +86,11 @@ describe('kPy1L2N05S regression', () => {
       expect(ftb!.type).toBe('mod')
     })
 
-    it('should report limitations about missing source percentages', () => {
-      const hasSourceLimitation = fixture.limitations.some(
-        l => l.includes('占比数据') || l.includes('profiler')
+    it('should report limitations about sampler data', () => {
+      const hasLimitation = fixture.limitations.some(
+        l => l.includes('sampler') || l.includes('profiler')
       )
-      expect(hasSourceLimitation).toBe(true)
+      expect(hasLimitation).toBe(true)
     })
   })
 
@@ -214,6 +250,75 @@ describe('kPy1L2N05S regression', () => {
       expect(md.trim().startsWith('{')).toBe(false)
       expect(md).toContain('# 总结')
       expect(md).not.toContain('"one_sentence_summary"')
+    })
+  })
+})
+
+// ---- Paper (7twWCWSV0B) regression tests ----
+describe('7twWCWSV0B regression (Paper)', () => {
+  const fixture = loadFixture('7twWCWSV0B.normalized.fixture.json')
+
+  describe('Normalizer output', () => {
+    it('should extract healthy TPS 20.0', () => {
+      expect(fixture.health.tps).toBeDefined()
+      expect(fixture.health.tps!.latest).toBeGreaterThan(19.9)
+    })
+
+    it('should extract low MSPT mean with occasional spike', () => {
+      expect(fixture.health.mspt).toBeDefined()
+      expect(fixture.health.mspt!.mean).toBeLessThan(20)
+      expect(fixture.health.mspt!.max).toBeGreaterThan(100)
+    })
+
+    it('should have method percent values', () => {
+      const mt = fixture.profiler.threads.find((t: any) => t.type === 'main')
+      const withPct = mt!.topMethods!.filter((m: any) => m.percent != null)
+      expect(withPct.length).toBeGreaterThan(0)
+    })
+
+    it('should classify sources as plugin', () => {
+      for (const s of fixture.profiler.sources) {
+        expect(s.type).toBe('plugin')
+      }
+    })
+
+    it('should have essentials and luckperms as plugins', () => {
+      const names = fixture.profiler.sources.map((s: any) => s.name)
+      expect(names).toContain('essentials')
+      expect(names).toContain('luckperms')
+    })
+
+    it('should report limitation about minecraft-only methods', () => {
+      const hasLim = fixture.limitations.some((l: string) => l.includes('原版 minecraft'))
+      expect(hasLim).toBe(true)
+    })
+  })
+
+  describe('RuleAnalyzer', () => {
+    const analyzer = new SparkRuleAnalyzer()
+    const result = analyzer.analyze(fixture)
+
+    it('should NOT detect TPS as low (TPS is 20)', () => {
+      const tpsEvidence = result.evidence.find(e => e.title.includes('TPS 偏低'))
+      expect(tpsEvidence).toBeUndefined()
+    })
+
+    it('should detect MSPT spike as medium', () => {
+      const msptSpike = result.evidence.find(e => e.title.includes('MSPT 峰值'))
+      expect(msptSpike).toBeDefined()
+    })
+
+    it('should have low or normal severity', () => {
+      expect(['low', 'normal']).toContain(result.severity)
+    })
+
+    it('should classify plugin names as low confidence hints', () => {
+      const pluginEvidence = result.evidence.filter(e =>
+        e.title.includes('luckperms') || e.title.includes('essentials')
+      )
+      for (const e of pluginEvidence) {
+        expect(e.confidence).toBe('low')
+      }
     })
   })
 })

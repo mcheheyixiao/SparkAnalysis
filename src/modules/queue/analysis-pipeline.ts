@@ -25,16 +25,23 @@ class AnalysisPipeline {
       // For sampler/profiler or unknown report types, try to fetch full data
       // to get more complete thread/source information.
       let normalizedInput = rawData
+      let fullFetchFailed = false
+      let fullFailReason = ''
       if (rawData.reportType === 'sampler' || rawData.reportType === 'unknown') {
         try {
           const fullJson = await sparkFetcher.fetchFullData(sparkCode)
           normalizedInput = sparkFetcher.mergeRawAndFull(rawData, fullJson)
-        } catch {
+        } catch (err) {
           // Full fetch failure is non-fatal — continue with raw metadata only
+          fullFetchFailed = true
+          fullFailReason = err instanceof Error ? err.message : 'Unknown error'
+          rawData.fullFetchFailed = true
+          rawData.fullFailReason = fullFailReason
           await logService.write('warn', 'pipeline', 'Full data fetch failed, continuing with raw metadata', {
             reportId,
             sparkCode,
             reportType: rawData.reportType,
+            error: fullFailReason,
           })
         }
       }

@@ -78,6 +78,16 @@ async function main() {
   }
   console.log(`  (total: ${normalized.profiler.sources.length} sources)`)
 
+  // Source percent stats
+  const sourcesWithPct = normalized.profiler.sources.filter((s: any) => s.totalPercent != null)
+  console.log(`\n  [Stats] ${sourcesWithPct.length}/${normalized.profiler.sources.length} sources have percent`)
+  if (sourcesWithPct.length > 0) {
+    console.log('  Sources with percent: ' + sourcesWithPct.map((s: any) => `${s.name}=${s.totalPercent}`).join(', '))
+  }
+  const allM = normalized.profiler.threads.flatMap((t: any) => t.topMethods || [])
+  const nonMc = allM.filter((m: any) => m.source && m.source !== 'minecraft' && m.source !== 'java' && m.source !== 'native' && m.source !== 'unknown')
+  console.log(`  [Stats] Methods: ${allM.length} total, ${nonMc.length} non-minecraft/java/native`)
+
   console.log('\n── Limitations ──')
   for (const l of normalized.limitations) {
     console.log(`  ⚠ ${l}`)

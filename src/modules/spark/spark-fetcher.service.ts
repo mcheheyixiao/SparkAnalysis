@@ -20,7 +20,11 @@ export class SparkFetcher {
   constructor(options?: { timeout?: number; rawMaxBytes?: number; fullMaxBytes?: number }) {
     this.defaultTimeout = options?.timeout ?? 10000
     this.rawMaxBytes = options?.rawMaxBytes ?? 5 * 1024 * 1024
-    this.fullMaxBytes = options?.fullMaxBytes ?? 30 * 1024 * 1024
+    // Priority: 1) options param, 2) env SPARK_FULL_MAX_BYTES, 3) default 50MB
+    const envFullMax = process.env.SPARK_FULL_MAX_BYTES ? parseInt(process.env.SPARK_FULL_MAX_BYTES, 10) : undefined
+    this.fullMaxBytes = options?.fullMaxBytes
+      ?? (envFullMax && !isNaN(envFullMax) && envFullMax > 0 ? envFullMax : undefined)
+      ?? 50 * 1024 * 1024
   }
 
   async fetchRawMetadata(code: string): Promise<SparkRawData> {

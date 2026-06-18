@@ -1,5 +1,5 @@
 {
-  "_description": "Normalized summary fixture from real spark report kPy1L2N05S (Forge 1.19.2, TPS 13.95). Stripped to key fields for testing.",
+  "_description": "Normalized summary fixture from real spark report kPy1L2N05S (Forge 1.19.2, TPS 13.95). Updated with P1-P3 fixes: percent from times[], source from classSources+package fallback.",
   "code": "kPy1L2N05S",
   "reportType": "sampler",
   "server": {
@@ -27,11 +27,12 @@
         "name": "Server thread",
         "type": "main",
         "topMethods": [
-          { "name": "native", "source": null },
-          { "name": "libc.so.6", "source": null },
-          { "name": "net.minecraft.Util", "source": null },
-          { "name": "java.lang.invoke.DirectMethodHandle$Holder", "source": null },
-          { "name": "java.lang.invoke.Invokers$Holder", "source": null }
+          { "name": "net.minecraft.server.MinecraftServer.m_130011_", "packageName": "net.minecraft.server.MinecraftServer", "source": "minecraft", "percent": 2.2 },
+          { "name": "net.minecraft.server.MinecraftServer.m_206580_", "packageName": "net.minecraft.server.MinecraftServer", "source": "minecraft", "percent": 2.2 },
+          { "name": "java.lang.Thread.run", "packageName": "java.lang.Thread", "source": "java", "percent": 2.2 },
+          { "name": "net.minecraft.server.MinecraftServer.m_5705_", "packageName": "net.minecraft.server.MinecraftServer", "source": "minecraft", "percent": 2.1 },
+          { "name": "net.minecraft.world.level.lighting.DynamicGraphMinFixedPoint.update", "packageName": "net.minecraft.world.level.lighting.DynamicGraphMinFixedPoint", "source": "minecraft", "percent": 0.5 },
+          { "name": "net.minecraft.server.level.ChunkTracker.update", "packageName": "net.minecraft.server.level.ChunkTracker", "source": "minecraft", "percent": 0.4 }
         ]
       }
     ],
@@ -46,21 +47,16 @@
       { "name": "prefab", "type": "mod" },
       { "name": "incontrol", "type": "mod" },
       { "name": "sophisticatedcore", "type": "mod" },
-      { "name": "nanhealthfixer", "type": "mod" },
-      { "name": "keybindjs", "type": "mod" },
-      { "name": "chestcavityjs", "type": "mod" },
+      { "name": "modernfix", "type": "mod" },
       { "name": "xaeroworldmap", "type": "mod" },
       { "name": "goety", "type": "mod" },
       { "name": "placebo", "type": "mod" },
       { "name": "citadel", "type": "mod" },
-      { "name": "alexsmobs", "type": "mod" },
-      { "name": "modernfix", "type": "mod" },
-      { "name": "tetrajs", "type": "mod" }
+      { "name": "alexsmobs", "type": "mod" }
     ],
     "suspiciousMethods": []
   },
   "limitations": [
-    "来源列表已提取，但所有来源均缺少占比数据，无法判断各来源的真实开销权重",
-    "缺少完整 profiler 调用树数据，建议使用 /spark profiler --timeout 120 重新采集以获取方法级热点和精确占比"
+    "当前数据来自 sampler（采样器），仅能提供有限的方法热点线索。建议使用 /spark profiler --timeout 120 采集更精确的调用树数据"
   ]
 }

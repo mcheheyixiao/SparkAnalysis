@@ -124,13 +124,23 @@ export class PromptBuilder {
       (t) => t.type === 'main' || t.name.toLowerCase().includes('server thread'),
     )
     if (mainThread?.topMethods?.length) {
-      lines.push('### 主线程 Top 方法（最热的内核级方法）')
-      lines.push('注意：这些是采样到的方法调用，仅代表 CPU 时间分布，不等同于某个模组/插件的开销。')
-      for (const m of mainThread.topMethods.slice(0, 8)) {
+      lines.push('### 主线程 Top 方法（按优先级排序后的热点方法）')
+      lines.push('注意：已自动过滤以下低优先级方法（始终在调用栈顶部，不具诊断价值）：')
+      lines.push('- 根帧（MinecraftServer.runServer, Thread.run, lambda$spin 等）— 始终在栈上，已被排除')
+      lines.push('- 空闲/等待方法（Unsafe.park, LockSupport.parkNanos, Thread.sleep 等）— 表示服务器在等下一个 tick，非性能热点')
+      lines.push('')
+      lines.push('区分规则：')
+      lines.push('- 来源为 minecraft/java/native → 原版或系统方法，无法直接归因到具体模组')
+      lines.push('- 来源为具体 mod/plugin 名称 → 需结合占比和主线程证据判断')
+      lines.push('- 方法解释为"低置信"时，不能作为 suspected_causes 根因')
+      lines.push('- park/sleep/wait 类方法如果仍然出现，说明它们确实占用了显著比例，需要关注')
+      lines.push('')
+      for (const m of mainThread.topMethods.slice(0, 10)) {
         const pct = m.percent !== undefined ? ` (${m.percent.toFixed(1)}%)` : ''
         const src = m.source ? ` [来源: ${m.source}]` : ''
         const interpretation = this.classifyMethodType(m.name, m.packageName)
-        lines.push(`- ${m.name}${pct}${src} — ${interpretation}`)
+        lines.push(`- ${m.name}${pct}${src}`)
+        lines.push(`  → ${interpretation}`)
       }
       lines.push('')
     }
@@ -139,11 +149,12 @@ export class PromptBuilder {
     const sources = normalized.profiler.sources
     if (sources?.length) {
       lines.push('### 来源置信度摘要')
-      lines.push('来源分析规则：')
-      lines.push('- 仅出现在 metadata.sources 列表 → 低置信线索，不能作为根因')
-      lines.push('- 出现在主线程方法栈 + 占比 ≥5% → 中置信')
-      lines.push('- 出现在主线程方法栈 + 占比 ≥15% → 高置信')
-      lines.push('- 源码为 generic Java/native/Minecraft → 无法进一步归因到具体模组')
+      lines.push('来源分析规则（重要 — 请严格遵循）：')
+      lines.push('- 仅出现在 metadata.sources 列表且无占比数据 → 低置信线索，不能作为 suspected_causes 根因')
+      lines.push('- 出现在主线程方法栈 + 占比 ≥5% → 中置信，可列为 suspected_causes')
+      lines.push('- 出现在主线程方法栈 + 占比 ≥15% → 高置信，可作为主要 suspected_causes')
+      lines.push('- 来源为 minecraft/java/native → 这是原版/系统代码，无法归因到具体模组。即使占比高也只能说明原版系统压力大，不能说某个模组是根因。')
+      lines.push('- 来源为具体 mod 名称 → 可结合占比评估，但仍需确认方法栈中确实出现了该模组的方法')
       lines.push('')
 
       const highSources = sources.filter((s) => s.totalPercent !== undefined && s.totalPercent > 5 && s.evidence?.length)
@@ -179,25 +190,40 @@ export class PromptBuilder {
   }
 
   /**
-   * Classify a method as generic Java, Minecraft native, or user-mod-related
-   * to help the AI avoid misattributing generic methods.
+   * Classify a method to help the AI understand what it means.
+   * These interpretations prevent the AI from misattributing generic methods
+   * or jumping to conclusions about specific mods.
    */
   private classifyMethodType(name: string, pkg?: string): string {
     const full = `${pkg || ''}.${name || ''}`.toLowerCase()
     // Native / JVM internal
-    if (name.startsWith('native.') || name.includes('jvm') || name.includes('[vdso]')) return 'JVM原生方法'
+    if (name.startsWith('native.') || name.includes('jvm') || name.includes('[vdso]')) return 'JVM原生方法（非热点）'
     // Generic Java
     if (full.includes('java.') || full.includes('sun.') || full.includes('jdk.')) return 'Java标准库'
-    // Minecraft internals
+    // Thread scheduling / sleep / wait
+    if (full.includes('wait') || full.includes('sleep') || full.includes('park') || full.includes('yield')) return '线程等待（非热点）'
+    // Minecraft internals — with specific domain hints
+    if (full.includes('net.minecraft.world.level.lighting') || full.includes('dynamicgraphminfixedpoint')) return '原版光照/图传播计算，指向世界光照更新压力。不足以归因到具体模组'
+    if (full.includes('net.minecraft.server.level.chunktracker') || full.includes('chunktracker')) return '区块追踪相关方法，可能与区块加载/卸载/玩家移动有关'
+    if (full.includes('net.minecraft.server.level.chunk') || full.includes('chunkmap') || full.includes('chunkholder')) return '区块管理相关方法，与区块加载/卸载有关'
+    if (full.includes('net.minecraft.world.level.chunk') || full.includes('chunksource') || full.includes('chunkstatus')) return '区块生成/状态计算相关'
+    if (full.includes('net.minecraft.world.entity') || full.includes('mob') || full.includes('ai.')) return '实体/生物AI相关方法'
+    if (full.includes('net.minecraft.world.level.block') || full.includes('redstone')) return '方块/红石更新相关方法'
+    if (full.includes('net.minecraft.world.level.pathfinding') || full.includes('pathfind') || full.includes('pathed')) return '寻路算法相关'
+    if (full.includes('net.minecraft.world.level.timers') || full.includes('timerqueue') || full.includes('functioncallback')) return '命令函数/数据包定时器执行。如果占比高，说明存在频繁执行的 mcfunction 或数据包命令'
+    if (full.includes('commands.execution') || full.includes('executecommand') || full.includes('commandqueue')) return '命令执行引擎。高占比可能意味着有数据包/插件在频繁执行命令'
+    if (full.includes('serverfunctionmanager') || full.includes('functionmanager')) return '数据包函数管理器。执行 mcfunction 文件中的命令函数'
+    if (full.includes('dedicatedserver.tickserver')) return '专用服务器主 tick 循环 — 包含所有子系统的调度开销'
+    if (full.includes('serverlevel.tick') || full.includes('serverlevel.lambda$tick')) return '世界维度 tick 循环 — 包含实体/区块/方块实体等所有世界内容更新'
+    if (full.includes('tick') && (full.includes('level') || full.includes('world'))) return '世界Tick循环方法，包含区块/实体/方块等子系统调度'
+    if (full.includes('net.minecraft.server.minecraftserver') || full.includes('m_130011_') || full.includes('m_206580_') || full.includes('m_5705_')) return 'Minecraft服务器主循环方法，属于顶层调度，不指向具体子系统（已被过滤到低优先级）'
     if (full.includes('net.minecraft') || full.includes('com.mojang')) return 'Minecraft内部方法'
     // Forge internals
     if (full.includes('net.minecraftforge')) return 'Forge框架方法'
     // Fabric internals
     if (full.includes('net.fabricmc')) return 'Fabric框架方法'
-    // Thread scheduling / sleep / wait
-    if (full.includes('wait') || full.includes('sleep') || full.includes('park') || full.includes('yield')) return '线程等待（非热点）'
-    // Mod/plugin related
-    if (full.includes('ftb') || full.includes('luckperms') || full.includes('essentials')) return '可能关联模组/插件方法'
+    // Mod/plugin related — always note this is low confidence without more evidence
+    if (full.includes('ftb') || full.includes('luckperms') || full.includes('essentials')) return '可能关联模组/插件方法（低置信，需主线程证据确认）'
     return '未知类型方法'
   }
 
@@ -233,11 +259,33 @@ export class PromptBuilder {
 数据限制：{{limitations}}
 后端解析调试信息：{{debugInfo}}
 
-重要提醒：
-- 低置信度（low confidence）的来源线索不能作为主要 suspected_causes。
-- 如果某来源只出现在 source list 或规则预分析中，而没有主线程方法栈证据，只能写入 key_evidence 或 missing_information，不能作为根因。
-- 来源名称本身（如 ftbessentials、luckperms）不能作为判定依据，必须结合主线程占比和方法栈。
-- 如果数据不足以定位具体根因（如缺少 profiler 调用树、缺少方法级占比），必须在 missing_information 中明确说明。
+重要提醒（请严格遵守）：
+
+1. 已确定 vs 不确定的区分：
+   - 已确定：TPS/MSPT 数值异常、主线程热点方法名称和占比（这些是客观数据）
+   - 中置信推断：主线程热点指向的具体子系统（如光照、区块、实体），但需说明"不足以确定具体模组"
+   - 不能确定：某个具体 mod 是根因、GC 是问题（如果缺少 GC 数据）、服务器版本/加载器适配方案
+
+2. 低置信度（low confidence）的来源线索处理：
+   - 如果某来源只出现在 source list 而没有主线程方法栈证据 → 只能写入 key_evidence 并标注 low confidence
+   - 不能作为 suspected_causes 的根因
+   - 来源名称本身（如 ftbessentials、luckperms）不能作为判定依据
+
+3. 缺失信息的处理：
+   - 如果缺少 GC 数据，必须在 missing_information 中说明"缺少 GC 数据，无法判断 GC 是否导致卡顿"
+   - 如果缺少玩家在线人数，建议在 missing_information 中说明
+   - 如果 profiler 调用树不完整，说明"需要更完整的 profiler 采样才能定位具体模组"
+   - 如果 method 来源全部是 minecraft，说明"当前热点均为原版方法，无法归因到具体模组"
+
+4. 修复建议的约束：
+   - 不要直接建议安装特定模组（如 Starlight、Lithium）作为必然修复方案
+   - 可写"可考虑光照/区块优化方案，但需确认版本和加载器兼容性"
+   - 如果服务器版本/加载器不明确，不要给具体 mod 名
+
+5. 标记要求：
+   - suspected_causes 最多 3 条，每条必须有具体的证据来源（方法名+占比）
+   - fix_plan 最多 5 条，难度标记为 easy/medium/hard
+   - key_evidence 最多 5 条，保留高/中置信度的
 
 请生成中文诊断报告，输出严格 JSON 格式。`
   }

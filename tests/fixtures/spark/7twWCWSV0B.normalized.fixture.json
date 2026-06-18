@@ -1,0 +1,53 @@
+{
+  "_description": "Normalized summary fixture from real spark report 7twWCWSV0B (Paper 1.21.10, TPS 20.0). Healthy server with occasional MSPT spikes.",
+  "code": "7twWCWSV0B",
+  "reportType": "sampler",
+  "server": {
+    "platform": "Paper",
+    "minecraftVersion": "1.21.10",
+    "sparkVersion": "2",
+    "serverBrand": "Paper"
+  },
+  "timing": {},
+  "health": {
+    "tps": {
+      "latest": 19.999993830335235,
+      "mean": 19.999993830335235
+    },
+    "mspt": {
+      "mean": 13.0377015,
+      "median": 13.0377015,
+      "max": 129.866235
+    },
+    "gc": {}
+  },
+  "profiler": {
+    "threads": [
+      {
+        "name": "Server thread",
+        "type": "main",
+        "topMethods": [
+          { "name": "net.minecraft.server.MinecraftServer.runServer", "packageName": "net.minecraft.server.MinecraftServer", "source": "minecraft", "percent": 6.6 },
+          { "name": "net.minecraft.server.MinecraftServer.lambda$spin$2", "packageName": "net.minecraft.server.MinecraftServer", "source": "minecraft", "percent": 6.6 },
+          { "name": "java.lang.Thread.runWith", "packageName": "java.lang.Thread", "source": "java", "percent": 6.6 },
+          { "name": "java.lang.Thread.run", "packageName": "java.lang.Thread", "source": "java", "percent": 6.6 }
+        ]
+      }
+    ],
+    "sources": [
+      { "name": "viaversion", "type": "plugin" },
+      { "name": "placeholderapi", "type": "plugin" },
+      { "name": "luckperms", "type": "plugin" },
+      { "name": "vault", "type": "plugin" },
+      { "name": "protocollib", "type": "plugin" },
+      { "name": "worldedit", "type": "plugin" },
+      { "name": "worldguard", "type": "plugin" },
+      { "name": "essentials", "type": "plugin" },
+      { "name": "towny", "type": "plugin" }
+    ],
+    "suspiciousMethods": []
+  },
+  "limitations": [
+    "所有热点方法均为原版 minecraft/Java/Native 方法，未发现具体插件/模组方法的显著占比。当前采样数据无法归因到特定插件或模组，建议使用 /spark profiler --timeout 120 采集更精确的 profiler 数据"
+  ]
+}
