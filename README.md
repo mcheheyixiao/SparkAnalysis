@@ -1,8 +1,10 @@
-# Spark AI Analyzer Backend
+# Spark AI Analyzer
 
-为 Minecraft 服主提供 spark 性能报告 AI 分析平台的后端服务。用户粘贴 `https://spark.lucko.me/{code}` 链接，后端自动抓取 spark 报告数据、整理结构化摘要、调用 DeepSeek API 生成中文诊断报告并返回。
+为 Minecraft 服主提供 spark 性能报告 AI 分析平台。用户粘贴 `https://spark.lucko.me/{code}` 链接，后端自动抓取 spark 报告数据，前端展示中文诊断报告。
 
 ## 技术栈
+
+### 后端
 
 | 层 | 选型 | 版本 |
 |---|---|---|
@@ -18,7 +20,20 @@
 | Security | helmet, @fastify/cors, @fastify/rate-limit | — |
 | Job Queue | 自实现 InMemoryJobQueue（可替换为 BullMQ） | — |
 
-**明确不使用的技术（MVP 阶段）：** Spring Boot / Python / NestJS / Selenium / Playwright / BullMQ / Redis / RabbitMQ
+### 前端
+
+| 层 | 选型 |
+|---|---|
+| Framework | Vue 3 |
+| Build | Vite 6 |
+| Language | TypeScript (strict) |
+| Router | Vue Router 4 |
+| State | Pinia |
+| UI Library | Naive UI |
+| HTTP | Axios |
+| Markdown | markdown-it |
+
+**明确不使用的技术（MVP 阶段）：** Spring Boot / Python / NestJS / Selenium / Playwright / BullMQ / Redis / RabbitMQ / React
 
 ## 功能特性
 
@@ -41,7 +56,7 @@
 - MySQL 8.0+
 - npm 10+
 
-### 安装步骤
+### 后端安装
 
 ```bash
 # 1. 克隆项目
@@ -68,14 +83,37 @@ npm run prisma:seed
 npm run dev
 ```
 
-服务默认运行在 `http://localhost:3001`。
+后端服务默认运行在 `http://localhost:3001`。
 
-### 生产构建
+### 前端安装
+
+```bash
+cd frontend
+
+# 安装依赖
+npm install
+
+# 启动开发服务器
+npm run dev
+```
+
+前端开发服务器运行在 `http://localhost:5173`，自动代理 `/api` 到后端。
+
+### 后端生产构建
 
 ```bash
 npm run build
 npm start
 ```
+
+### 前端生产构建
+
+```bash
+cd frontend
+npm run build
+```
+
+构建产物在 `frontend/dist/`。部署时将此目录作为 Nginx 的静态文件根目录。
 
 ## 环境变量
 
@@ -795,6 +833,12 @@ pm2 delete spark-ai-analyzer-backend   # 删除
 宝塔面板 → 网站 → 选择你的站点 → 设置 → 配置文件 → 在 `server` 块中添加：
 
 ```nginx
+# 前端静态文件
+location / {
+    root /www/wwwroot/spark-ai-analyzer-backend/frontend/dist;
+    try_files $uri $uri/ /index.html;
+}
+
 # Spark AI Analyzer Backend API
 location /api/ {
     proxy_pass http://127.0.0.1:3001/api/;
@@ -823,14 +867,12 @@ curl http://127.0.0.1:3001/api/public/analyze \
   -d '{"url":"https://spark.lucko.me/7twWCWSV0B"}'
 
 # 通过域名测试
-curl https://你的域名.com/api/public/analyze \
-  -H "Content-Type: application/json" \
-  -d '{"url":"https://spark.lucko.me/7twWCWSV0B"}'
+curl https://你的域名.com/api/health
 ```
 
 ### 10. 首次登录后台
 
-1. 访问你的前端管理页面
+1. 访问你的前端 `https://你的域名.com/admin/login`
 2. 使用 `.env` 中配置的 `DEFAULT_ADMIN_USERNAME` 和 `DEFAULT_ADMIN_PASSWORD` 登录
 3. 进入 AI 设置 → 填写 DeepSeek API Key → 保存 → 点击测试连接
 4. 确认连接成功后，系统即可正常使用
