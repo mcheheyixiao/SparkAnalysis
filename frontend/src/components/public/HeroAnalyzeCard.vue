@@ -1,14 +1,14 @@
 <template>
-  <div class="hero-card glass-card">
+  <div ref="heroRef" class="hero-card glass-card">
     <div class="hero-inner">
       <div class="hero-left">
-        <app-logo :size="'default'" />
-        <h1 class="hero-title">让 spark 性能报告变成小白也看得懂的中文诊断</h1>
-        <p class="hero-subtitle">
+        <app-logo class="reveal-item" :size="'default'" />
+        <h1 class="hero-title reveal-item">让 spark 性能报告变成小白也看得懂的中文诊断</h1>
+        <p class="hero-subtitle reveal-item">
           粘贴 spark.lucko.me 链接，自动分析 TPS、MSPT、线程热点、内存与插件风险
         </p>
 
-        <div class="hero-form">
+        <div class="hero-form reveal-item">
           <n-input
             v-model:value="url"
             placeholder="粘贴 https://spark.lucko.me/xxxx"
@@ -44,7 +44,7 @@
           </n-button>
         </div>
 
-        <div class="hero-hints">
+        <div class="hero-hints reveal-item">
           <n-space align="center" :size="4">
             <n-icon size="18" color="#667085">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -59,7 +59,7 @@
       </div>
 
       <div class="hero-right">
-        <div class="preview-card glass-card">
+        <div class="preview-card glass-card reveal-item">
           <div class="preview-header">
             <div class="preview-badge">AI 分析预览</div>
           </div>
@@ -112,8 +112,17 @@ import { ApiError } from '@/api/http'
 import { getErrorMessage } from '@/utils/format'
 import AppLogo from '@/components/common/AppLogo.vue'
 import MetricCard from './MetricCard.vue'
+import { useRevealAnimation } from '@/composables/useRevealAnimation'
 
 const router = useRouter()
+
+const heroRef = ref<HTMLElement | null>(null)
+
+useRevealAnimation(heroRef, {
+  selector: '.reveal-item',
+  stagger: 0.08,
+  autoPlay: true,
+})
 const message = useMessage()
 const reportStore = useReportStore()
 
