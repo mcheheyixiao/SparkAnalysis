@@ -85,6 +85,8 @@ export interface PublicReport {
   normalizedSummary?: Record<string, unknown> | null
   ruleAnalysis?: Record<string, unknown> | null
   aiResult?: AiResult | null
+  markdownReport?: string
+  isFallback?: boolean
 }
 
 // Admin types

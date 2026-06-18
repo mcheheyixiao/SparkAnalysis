@@ -3,6 +3,7 @@ import { prisma } from '../../plugins/prisma.js'
 import { AppError } from '../../utils/errors.js'
 import { safeJsonParse, safeJsonStringify } from '../../utils/json.js'
 import { settingsService } from '../settings/settings.service.js'
+import { normalizeMarkdownReport } from './markdown-report.builder.js'
 
 export interface FindOrCreateResult {
   reportId: string
@@ -376,6 +377,19 @@ export class ReportService {
       result.normalizedSummary = safeJsonParse(report.normalizedJson, null)
       result.ruleAnalysis = safeJsonParse(report.ruleAnalysisJson, null)
       result.aiResult = safeJsonParse(report.analysisResult?.aiResultJson, null)
+      result.isFallback = report.analysisResult?.isFallback ?? false
+
+      // Build a clean, normalized markdownReport — never expose raw JSON to users.
+      // This defends against old data where markdownReport may have been raw AI text.
+      result.markdownReport = normalizeMarkdownReport({
+        storedMarkdownReport: report.analysisResult?.markdownReport,
+        aiResultJson: report.analysisResult?.aiResultJson
+          ? safeJsonParse(report.analysisResult.aiResultJson, null)
+          : null,
+        ruleAnalysis: safeJsonParse(report.ruleAnalysisJson, null),
+        summary: report.analysisResult?.summary,
+        severity: report.analysisResult?.severity,
+      })
     }
 
     if (report.status === 'processing' || report.status === 'pending') {

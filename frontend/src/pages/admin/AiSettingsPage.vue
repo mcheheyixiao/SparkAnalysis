@@ -127,6 +127,9 @@ async function handleSave() {
   } catch (e) {
     if (e instanceof ApiError) {
       message.error(getErrorMessage(e.code))
+    } else {
+      message.error('AI 设置保存失败，请稍后重试')
+      console.error('AiSettings handleSave error:', e)
     }
   } finally {
     saving.value = false

@@ -154,6 +154,9 @@ async function handleSave() {
   } catch (e) {
     if (e instanceof ApiError) {
       message.error(getErrorMessage(e.code))
+    } else {
+      message.error('系统设置保存失败，请稍后重试')
+      console.error('SystemSettings handleSave error:', e)
     }
   } finally {
     saving.value = false

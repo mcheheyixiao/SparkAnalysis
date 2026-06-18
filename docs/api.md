@@ -84,6 +84,22 @@
 - **仍保存** `markdownReport`、`severity`、`summary`、`isFallback`、`model` 等基础字段
 - 前端可通过 `markdownReport` 和 `summary` 展示报告，应优雅降级处理 `aiResult` 为 `null` 的情况
 
+### AI 输出报告生成策略（重要）
+
+- **AI 输出以结构化 JSON 为主**：AI 只需输出简洁的 JSON 字段，`markdown_report` 字段不超过 1200 个中文字符
+- **最终 Markdown 报告由后端生成**：后端 `markdown-report.builder` 根据 AI 结构化字段构建完整可读的 Markdown 报告
+- **JSON 解析失败时**：后端使用规则预分析生成干净的兜底报告，**绝不**将原始 AI 输出拼接或暴露给普通用户
+- **前端展示优先级**：优先使用 `markdownReport` 字段（后端已生成）；其次使用 `aiResult.markdown_report`（仅当不像是 JSON 时）
+- **普通用户页面永不展示原始 AI JSON**：所有返回内容均经过后端 `normalizeMarkdownReport()` 处理和清理
+
+### fallback 报告说明
+
+当 `isFallback: true` 时：
+- AI 结构化输出解析失败，系统已使用规则预分析生成可读报告
+- `markdownReport` 包含完整的中文兜底诊断内容
+- 前端应显示友好提示："本报告使用规则兜底分析生成"
+- 建议用户重新分析或联系管理员检查 AI 配置
+
 ---
 
 ## 4. 普通用户接口
@@ -257,6 +273,8 @@
     "status": "completed",
     "severity": "high",
     "summary": "TPS 偏低；MSPT 过高",
+    "markdownReport": "# 总结\n...",
+    "isFallback": false,
     "createdAt": "2025-01-01T00:00:00.000Z",
     "completedAt": "2025-01-01T00:01:00.000Z",
     "normalizedSummary": { ... },
@@ -1066,7 +1084,9 @@
 17. **普通用户接口不返回 `clientIpHash`** — 仅管理员可见
 18. **`severity` 可选值:** `normal` | `low` | `medium` | `high` | `critical`
 19. **`reportType` 可选值:** `sampler` | `heap` | `health` | `unknown`
-20. **`markdown_report` 字段包含完整的 Markdown 格式分析报告** — 可使用 Markdown 渲染器展示
+20. **`markdownReport` 字段（顶层）包含后端生成/修正的完整可读 Markdown 报告** — 前端优先展示此字段
+20b. **`aiResult.markdown_report` 是 AI 原始输出** — 仅当 `markdownReport` 不存在且内容不像 JSON 时作为备选展示
+20c. **`isFallback` 为 `true` 时表示使用规则兜底分析** — 前端应显示友好提示信息
 
 ### 限流
 

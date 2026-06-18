@@ -48,6 +48,8 @@ export class SettingsService {
    */
   async updateSettings(updates: Record<string, SettingValue>): Promise<void> {
     for (const [key, value] of Object.entries(updates)) {
+      // Defensive: skip undefined/null values, convert everything else to string
+      if (value === undefined || value === null) continue
       const stringValue = typeof value === 'string' ? value : JSON.stringify(value)
       await prisma.systemSetting.upsert({
         where: { key },

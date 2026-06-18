@@ -43,7 +43,8 @@
 - **小白友好** — 输出包含通俗易懂的 "小白解释"，专业术语翻译为日常比喻
 - **异步分析** — 提交后立即返回 reportId，后台任务异步执行，前端轮询获取结果
 - **结果复用** — 同一 spark 链接在可配置 TTL 内返回已缓存结果，避免重复分析
-- **JSON 修复降级** — AI 返回非法 JSON 时自动修复，修复失败则降级为基于规则分析的 markdown 报告
+- **JSON 修复降级** — AI 返回非法 JSON 时自动修复，修复失败则降级为基于规则分析的干净中文 Markdown 报告（不暴露原始 AI 输出）
+- **Markdown 报告生成** — AI 输出以结构化 JSON 为主，最终可读的 Markdown 报告由后端根据结构化字段生成或修正，普通用户页面永不展示原始 AI JSON
 - **管理员后台** — JWT 认证、AI 配置管理、Prompt 模板管理、分析记录管理、系统日志查看
 - **安全防护** — SSRF 防护、IP 哈希存储、API Key AES-256-GCM 加密、多层级限流、Helmet 安全头
 - **优雅关闭** — SIGTERM/SIGINT 优雅关闭，等待进行中任务完成，超时标记失败
@@ -257,6 +258,8 @@ Body: { "url": "https://spark.lucko.me/7twWCWSV0B" }
     "status": "completed",
     "severity": "medium",
     "summary": "服务器主线程 CPU 占用偏高，疑似区块加载和实体 AI 导致",
+    "markdownReport": "# 总结\n主线程被区块加载和实体 AI 拖累...\n\n## 小白解释\n...",
+    "isFallback": false,
     "normalizedSummary": { /* 结构化摘要 */ },
     "ruleAnalysis": { /* 规则预分析结果 */ },
     "aiResult": {

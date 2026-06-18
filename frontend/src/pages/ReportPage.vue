@@ -180,9 +180,20 @@
           title="管理员已关闭完整 AI JSON 保存，当前展示的是可读报告摘要。"
         />
 
+        <!-- Fallback warning -->
+        <n-alert
+          v-if="report.isFallback"
+          type="warning"
+          :bordered="false"
+          class="no-ai-notice"
+          title="使用规则兜底分析"
+        >
+          AI 结构化输出可能异常，系统已自动使用规则预分析生成可读报告。建议重新分析或联系管理员检查 AI 配置。
+        </n-alert>
+
         <!-- Markdown report -->
-        <n-card class="report-section-card reveal-section" :bordered="true" title="完整诊断报告" v-if="report.aiResult?.markdown_report">
-          <markdown-report :content="report.aiResult.markdown_report" />
+        <n-card class="report-section-card reveal-section" :bordered="true" title="完整诊断报告">
+          <markdown-report :content="displayMarkdown" />
         </n-card>
         </div>
 
@@ -225,6 +236,32 @@ function getPrefersReducedMotion(): boolean {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches
 }
 
+// ── Defense: detect JSON-like strings ──
+
+function looksLikeJsonText(value: unknown): boolean {
+  if (typeof value !== 'string') return false
+  const trimmed = value.trim()
+  return trimmed.startsWith('{') || trimmed.startsWith('[')
+}
+
+// ── Client-side fallback markdown ──
+
+function buildClientFallbackMarkdown(report: PublicReport | null): string {
+  if (!report) return ''
+
+  return [
+    '# 总结',
+    report.summary || '当前报告暂无完整 AI 诊断内容。',
+    '',
+    '## 小白解释',
+    '当前系统没有拿到完整的可读报告，因此先展示摘要信息。请重新分析或联系管理员检查 AI 输出配置。',
+    '',
+    '## 建议下一步',
+    '- 重新提交 spark 链接分析。',
+    '- 如果多次出现，请管理员检查 AI Prompt、maxTokens 和后端日志。',
+  ].join('\n')
+}
+
 const route = useRoute()
 const router = useRouter()
 const message = useMessage()
@@ -252,6 +289,24 @@ const flatMetrics = computed(() => {
     }
   }
   return flat
+})
+
+// ── Display markdown priority ──
+// 1. report.markdownReport (backend-generated, clean)
+// 2. report.aiResult.markdown_report (only if not JSON-like)
+// 3. Client-side fallback from structured fields
+
+const displayMarkdown = computed(() => {
+  if (report.value?.markdownReport && !looksLikeJsonText(report.value.markdownReport)) {
+    return report.value.markdownReport
+  }
+
+  const aiMarkdown = report.value?.aiResult?.markdown_report
+  if (aiMarkdown && !looksLikeJsonText(aiMarkdown)) {
+    return aiMarkdown
+  }
+
+  return buildClientFallbackMarkdown(report.value)
 })
 
 // ---- Scroll-triggered section reveals ----
@@ -320,7 +375,7 @@ async function loadReport() {
 }
 
 function copyReport() {
-  const md = report.value.aiResult?.markdown_report
+  const md = displayMarkdown.value
   if (!md) return
   navigator.clipboard.writeText(md).then(() => {
     message.success('报告已复制到剪贴板')

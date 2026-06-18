@@ -407,46 +407,59 @@ export async function adminRoutes(fastify: FastifyInstance) {
   fastify.put('/api/admin/settings/system', {
     bodyLimit: 65536, // 64KB
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const parsed = systemSettingsWrapperSchema.safeParse(request.body)
-    if (!parsed.success) {
-      const firstIssue = parsed.error.issues[0]
-      // If the error is from .strict() (unrecognized key), use a specific code
-      const isUnrecognized = firstIssue?.code === 'unrecognized_keys'
-      return reply.status(400).send({
+    try {
+      const parsed = systemSettingsWrapperSchema.safeParse(request.body)
+      if (!parsed.success) {
+        const firstIssue = parsed.error.issues[0]
+        // If the error is from .strict() (unrecognized key), use a specific code
+        const isUnrecognized = firstIssue?.code === 'unrecognized_keys'
+        return reply.status(400).send({
+          success: false,
+          error: {
+            code: isUnrecognized ? 'INVALID_SETTINGS_KEY' : 'INVALID_SETTINGS_INPUT',
+            message: isUnrecognized
+              ? `未知的配置项: ${(firstIssue as any).keys?.join?.(', ') || 'unknown'}`
+              : firstIssue?.message || '参数校验失败',
+          },
+        })
+      }
+
+      await settingsService.updateSettings(parsed.data.settings)
+
+      // Audit log
+      const adminUser = (request as any).adminUser
+      await prisma.adminAuditLog.create({
+        data: {
+          id: randomUUID(),
+          adminUserId: adminUser.sub,
+          action: 'update_system_settings',
+          targetType: 'system_setting',
+          detailJson: JSON.stringify({ keys: Object.keys(parsed.data.settings) }),
+        },
+      })
+
+      await logService.write('info', 'admin', 'System settings updated', {
+        adminUsername: adminUser.username,
+        keys: Object.keys(parsed.data.settings),
+      })
+
+      const settings = await settingsService.getAllSettings()
+      return reply.send({
+        success: true,
+        data: { settings },
+      })
+    } catch (err) {
+      // Log the real error for debugging, but return a sanitized response
+      request.log.error({ err }, 'Failed to update system settings')
+      return reply.status(500).send({
         success: false,
         error: {
-          code: isUnrecognized ? 'INVALID_SETTINGS_KEY' : 'INVALID_SETTINGS_INPUT',
-          message: isUnrecognized
-            ? `未知的配置项: ${(firstIssue as any).keys?.join?.(', ') || 'unknown'}`
-            : firstIssue?.message || '参数校验失败',
+          code: 'INTERNAL_ERROR',
+          message: err instanceof AppError ? err.message : '系统设置保存失败，请稍后重试',
+          requestId: (request as any).requestId,
         },
       })
     }
-
-    await settingsService.updateSettings(parsed.data.settings)
-
-    // Audit log
-    const adminUser = (request as any).adminUser
-    await prisma.adminAuditLog.create({
-      data: {
-        id: randomUUID(),
-        adminUserId: adminUser.sub,
-        action: 'update_system_settings',
-        targetType: 'system_setting',
-        detailJson: JSON.stringify({ keys: Object.keys(parsed.data.settings) }),
-      },
-    })
-
-    await logService.write('info', 'admin', 'System settings updated', {
-      adminUsername: adminUser.username,
-      keys: Object.keys(parsed.data.settings),
-    })
-
-    const settings = await settingsService.getAllSettings()
-    return reply.send({
-      success: true,
-      data: { settings },
-    })
   })
 
   // ========================

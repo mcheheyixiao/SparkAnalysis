@@ -8,6 +8,7 @@ import { promptBuilder } from './prompt-builder.service.js'
 import type { IAIProvider, ChatMessage } from './ai-provider.interface.js'
 import type { AiAnalysisOutput, AiConfig, BuiltPrompts } from './ai.types.js'
 import type { NormalizedSummary, RuleAnalysisResult } from '../spark/spark.types.js'
+import { buildFallbackMarkdownReport } from '../reports/markdown-report.builder.js'
 import { z } from 'zod'
 
 const aiOutputSchema = z.object({
@@ -119,8 +120,9 @@ export class AiAnalysisService {
 
       // 6. Fallback: build from rule analysis
       isFallback = true
-      await logService.write('warn', 'ai', 'AI JSON parse failed, using fallback', {
+      await logService.write('warn', 'ai', 'AI JSON parse failed, using rule-based fallback', {
         model: result.model,
+        aiContentPreview: result.content.slice(0, 500),
       })
 
       return this.buildFallbackResult(ruleAnalysis, result)
@@ -179,11 +181,22 @@ export class AiAnalysisService {
     inputTokens?: number
     outputTokens?: number
   } {
-    const fallback: AiAnalysisOutput = {
-      one_sentence_summary: ruleAnalysis.summary || 'AI 分析结果解析失败，以下为基于规则分析的结果',
+    const summary = ruleAnalysis.summary || 'AI 分析结果解析失败，以下为基于规则分析的结果'
+
+    // Build clean fallback markdown — NEVER include raw AI output
+    const cleanMarkdown = buildFallbackMarkdownReport({
+      summary,
       severity: ruleAnalysis.severity,
-      beginner_explanation: `AI 返回内容格式异常，以下为基于规则预分析的结果。\n\n${ruleAnalysis.summary}\n\n${aiResult.content.slice(0, 500)}`,
-      key_evidence: ruleAnalysis.evidence.map(e => ({
+      ruleAnalysis,
+      reason: 'AI_INVALID_JSON',
+    })
+
+    const fallback: AiAnalysisOutput = {
+      one_sentence_summary: summary,
+      severity: ruleAnalysis.severity,
+      beginner_explanation:
+        '本报告使用规则兜底分析生成。AI 结构化输出可能异常，但以下内容仍可作为初步排查参考。',
+      key_evidence: ruleAnalysis.evidence.map((e) => ({
         title: e.title,
         explanation: e.detail,
         confidence: e.confidence,
@@ -199,14 +212,14 @@ export class AiAnalysisService {
       fix_plan: [],
       retest_commands: ruleAnalysis.recommendedCommands,
       missing_information: ruleAnalysis.limitations,
-      markdown_report: aiResult.content || `# 分析报告\n\n${ruleAnalysis.summary}`,
+      markdown_report: cleanMarkdown,
     }
 
     return {
       aiResultJson: fallback,
-      markdownReport: fallback.markdown_report,
+      markdownReport: cleanMarkdown,
       severity: ruleAnalysis.severity,
-      summary: ruleAnalysis.summary,
+      summary,
       isFallback: true,
       model: aiResult.model,
       inputTokens: aiResult.inputTokens,

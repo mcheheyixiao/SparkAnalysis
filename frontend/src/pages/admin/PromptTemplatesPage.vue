@@ -184,7 +184,12 @@ async function handleSave() {
     resetForm()
     await loadPrompts()
   } catch (e) {
-    if (e instanceof ApiError) message.error(getErrorMessage(e.code))
+    if (e instanceof ApiError) {
+      message.error(getErrorMessage(e.code))
+    } else {
+      message.error('模板保存失败，请稍后重试')
+      console.error('PromptTemplates handleSave error:', e)
+    }
   } finally {
     saving.value = false
   }
