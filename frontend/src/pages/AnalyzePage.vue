@@ -1,6 +1,6 @@
 <template>
   <public-layout>
-    <div class="analyze-page container">
+    <div ref="analyzeRef" class="analyze-page container">
       <n-card class="analyze-card" :bordered="true">
         <template #header>
           <div class="analyze-header">
@@ -44,7 +44,7 @@
 
         <!-- Processing state -->
         <template v-else>
-          <div class="progress-section">
+          <div class="progress-section reveal-item">
             <div class="progress-info">
               <h3 class="stage-label">{{ report.message || '准备中...' }}</h3>
               <span class="stage-progress">{{ report.progress || 0 }}%</span>
@@ -59,9 +59,11 @@
             />
           </div>
 
-          <status-timeline :current-stage="report.stage || 'queued'" />
+          <div class="reveal-item">
+            <status-timeline :current-stage="report.stage || 'queued'" />
+          </div>
 
-          <div class="analyze-tips">
+          <div class="analyze-tips reveal-item">
             <n-alert type="info" :bordered="false">
               <template #header>
                 分析通常需要 30-120 秒，AI 正在仔细诊断您的服务器性能数据
@@ -75,7 +77,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getReportStatus } from '@/api/public-api'
 import { usePolling } from '@/utils/polling'
@@ -83,6 +85,8 @@ import type { ReportStatus } from '@/api/types'
 import PublicLayout from '@/layouts/PublicLayout.vue'
 import StatusTimeline from '@/components/public/StatusTimeline.vue'
 import ErrorState from '@/components/common/ErrorState.vue'
+import { useRevealAnimation } from '@/composables/useRevealAnimation'
+import { ScrollTrigger } from '@/plugins/gsap'
 
 const route = useRoute()
 const router = useRouter()
@@ -96,10 +100,34 @@ const report = ref<ReportStatus>({
   message: '等待分析任务开始',
 })
 
+const analyzeRef = ref<HTMLElement | null>(null)
+
+const dataReady = computed(() =>
+  report.value.status === 'completed' || report.value.status === 'failed'
+)
+
+const { play } = useRevealAnimation(analyzeRef, {
+  selector: '.reveal-item',
+  stagger: 0.1,
+  autoPlay: false,
+  disabled: computed(() => !dataReady.value),
+})
+
+let entrancePlayed = false
+
 async function poll() {
   try {
     const status = await getReportStatus(reportId)
     report.value = status
+
+    // Play entrance animation once data is no longer pending
+    if (!entrancePlayed && status.status !== 'pending') {
+      entrancePlayed = true
+      await nextTick()
+      play()
+      await nextTick()
+      ScrollTrigger.refresh()
+    }
 
     if (status.status === 'completed') {
       polling.stop()
