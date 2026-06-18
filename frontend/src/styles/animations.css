@@ -1,0 +1,52 @@
+/* ===== Animation Variables ===== */
+:root {
+  --anim-duration-fast: 0.28s;
+  --anim-duration-base: 0.6s;
+  --anim-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --reveal-distance: 18px;
+}
+
+/* ===== Unified Initial Hidden State ===== */
+/* JS uses gsap.to() to animate from these to visible */
+.reveal-item {
+  opacity: 0;
+  transform: translateY(var(--reveal-distance));
+  will-change: opacity, transform;
+}
+
+.reveal-item-fade-only {
+  opacity: 0;
+}
+
+.reveal-section {
+  opacity: 0;
+  transform: translateY(var(--reveal-distance));
+  will-change: opacity, transform;
+}
+
+/* ===== App.vue Route Transition ===== */
+.page-fade-enter-active,
+.page-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.page-fade-enter-from,
+.page-fade-leave-to {
+  opacity: 0;
+}
+
+/* ===== Reduced Motion — Global Override ===== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .page-fade-enter-active,
+  .page-fade-leave-active {
+    transition: none !important;
+  }
+}
