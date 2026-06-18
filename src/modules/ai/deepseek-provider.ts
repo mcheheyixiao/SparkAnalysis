@@ -11,12 +11,54 @@ export class DeepSeekProvider implements IAIProvider {
   }
 
   async chatCompletion(options: ChatCompletionOptions): Promise<ChatCompletionResult> {
-    const { model, messages, temperature, maxTokens, timeoutMs } = options
+    const { model, messages, temperature, maxTokens, timeoutMs, responseFormat } = options
 
     if (!this.config.enabled || !this.config.apiKey) {
       throw new AppError('AI_NOT_CONFIGURED', 'AI 服务未配置或未启用')
     }
 
+    // Build request body
+    const body: Record<string, unknown> = {
+      model: model || this.config.model,
+      messages,
+      temperature: temperature ?? this.config.temperature,
+      max_tokens: maxTokens ?? this.config.maxTokens,
+    }
+
+    // Add response_format if requested and supported by the baseUrl/model
+    // DeepSeek API supports response_format: { type: "json_object" } on compatible models.
+    // For proxies or older endpoints that don't support it, we retry without.
+    const wantJsonFormat = responseFormat === 'json_object'
+    if (wantJsonFormat) {
+      body.response_format = { type: 'json_object' }
+    }
+
+    try {
+      return await this.doRequest(body, timeoutMs)
+    } catch (err) {
+      // If response_format was rejected, retry without it
+      if (wantJsonFormat && err instanceof AppError && err.code === 'AI_ERROR') {
+        const msg = err.message.toLowerCase()
+        // Common error patterns when response_format is not supported
+        if (
+          msg.includes('response_format') ||
+          msg.includes('unknown parameter') ||
+          msg.includes('invalid parameter') ||
+          msg.includes('unsupported') ||
+          msg.includes('not supported')
+        ) {
+          delete body.response_format
+          return await this.doRequest(body, timeoutMs)
+        }
+      }
+      throw err
+    }
+  }
+
+  private async doRequest(
+    body: Record<string, unknown>,
+    timeoutMs?: number,
+  ): Promise<ChatCompletionResult> {
     const controller = new AbortController()
     const timeout = timeoutMs ?? this.config.timeoutMs
     const timeoutId = setTimeout(() => controller.abort(), timeout)
@@ -28,12 +70,7 @@ export class DeepSeekProvider implements IAIProvider {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.config.apiKey}`,
         },
-        body: JSON.stringify({
-          model: model || this.config.model,
-          messages,
-          temperature: temperature ?? this.config.temperature,
-          max_tokens: maxTokens ?? this.config.maxTokens,
-        }),
+        body: JSON.stringify(body),
         signal: controller.signal,
       })
 
@@ -49,12 +86,12 @@ export class DeepSeekProvider implements IAIProvider {
         throw new AppError('AI_ERROR', 'AI 服务暂时不可用')
       }
 
-      const body = await response.body.text()
+      const respBody = await response.body.text()
 
       if (!response.statusCode || response.statusCode >= 400) {
         let apiError = `HTTP ${response.statusCode}`
         try {
-          const errJson = JSON.parse(body)
+          const errJson = JSON.parse(respBody)
           if (errJson?.error?.message) {
             apiError = errJson.error.message
           }
@@ -64,7 +101,7 @@ export class DeepSeekProvider implements IAIProvider {
 
       let json: any
       try {
-        json = JSON.parse(body)
+        json = JSON.parse(respBody)
       } catch {
         throw new AppError('AI_ERROR', 'AI 服务返回数据无法解析')
       }
@@ -80,7 +117,7 @@ export class DeepSeekProvider implements IAIProvider {
 
       return {
         content: finalContent,
-        model: json.model || model,
+        model: json.model || (body.model as string),
         inputTokens: json.usage?.prompt_tokens,
         outputTokens: json.usage?.completion_tokens,
       }

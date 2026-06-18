@@ -69,11 +69,16 @@ function makeRuleAnalysis(overrides: Partial<RuleAnalysisResult> = {}): RuleAnal
 // ── buildMarkdownReportFromAiResult ───────────────────────────
 
 describe('buildMarkdownReportFromAiResult', () => {
-  it('should use ai.markdown_report when it is valid Markdown', () => {
+  it('should always build from structured fields (never trust AI markdown_report directly)', () => {
+    // Even valid markdown from AI is NOT trusted directly — we always rebuild
+    // from structured fields to guarantee clean output.
     const ai = makeAIResult({ markdown_report: '# 总结\n一切正常' })
     const result = buildMarkdownReportFromAiResult(ai)
+    // Should contain the structured content, not the AI-provided markdown
     expect(result).toContain('# 总结')
-    expect(result).toContain('一切正常')
+    expect(result).toContain('TPS 仅 13.95')
+    // The AI's markdown text "一切正常" should NOT appear (we build from fields, not AI text)
+    expect(result).not.toContain('一切正常')
   })
 
   it('should NOT use ai.markdown_report when it looks like JSON', () => {

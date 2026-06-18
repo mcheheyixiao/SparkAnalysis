@@ -52,7 +52,116 @@ export class PromptBuilder {
       prompt = prompt.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), value)
     }
 
+    // Append evidence context block with key metrics for AI to reference
+    prompt += '\n\n' + this.buildEvidenceContext(normalized)
+
     return prompt
+  }
+
+  /**
+   * Build a structured evidence context block that gives the AI
+   * explicit TPS, MSPT, main thread methods, source confidence, and
+   * limitations — so the AI has the most important numbers at a glance.
+   */
+  private buildEvidenceContext(normalized: NormalizedSummary): string {
+    const lines: string[] = []
+    lines.push('---')
+    lines.push('## 证据上下文（Evidence Context）')
+    lines.push('')
+
+    // TPS
+    const tps = normalized.health?.tps
+    if (tps && (tps.latest !== undefined || tps.mean !== undefined)) {
+      lines.push('### TPS')
+      if (tps.latest !== undefined) lines.push(`- 最新 TPS: ${tps.latest}`)
+      if (tps.mean !== undefined) lines.push(`- 平均 TPS: ${tps.mean}`)
+      if (tps.min !== undefined) lines.push(`- 最低 TPS: ${tps.min}`)
+      if (tps.max !== undefined) lines.push(`- 最高 TPS: ${tps.max}`)
+      lines.push('')
+    }
+
+    // MSPT
+    const mspt = normalized.health?.mspt
+    if (mspt && (mspt.mean !== undefined || mspt.p95 !== undefined)) {
+      lines.push('### MSPT')
+      if (mspt.mean !== undefined) lines.push(`- 平均 MSPT: ${mspt.mean}ms`)
+      if (mspt.median !== undefined) lines.push(`- 中位 MSPT: ${mspt.median}ms`)
+      if (mspt.p95 !== undefined) lines.push(`- P95 MSPT: ${mspt.p95}ms`)
+      if (mspt.max !== undefined) lines.push(`- 最大 MSPT: ${mspt.max}ms`)
+      lines.push('')
+    }
+
+    // CPU & Memory
+    const cpu = normalized.health?.cpu
+    if (cpu && (cpu.process !== undefined || cpu.system !== undefined)) {
+      lines.push('### CPU')
+      if (cpu.process !== undefined) lines.push(`- 进程 CPU: ${cpu.process}%`)
+      if (cpu.system !== undefined) lines.push(`- 系统 CPU: ${cpu.system}%`)
+      lines.push('')
+    }
+
+    const mem = normalized.health?.memory
+    if (mem && (mem.usedMB !== undefined || mem.usagePercent !== undefined)) {
+      lines.push('### 内存')
+      if (mem.usedMB !== undefined && mem.maxMB !== undefined) {
+        lines.push(`- 已用: ${mem.usedMB}MB / ${mem.maxMB}MB`)
+      }
+      if (mem.usagePercent !== undefined) lines.push(`- 使用率: ${mem.usagePercent}%`)
+      lines.push('')
+    }
+
+    // GC
+    const gc = normalized.health?.gc
+    if (gc) {
+      if (gc.collectors?.length) lines.push(`- GC 收集器: ${gc.collectors.join(', ')}`)
+      if (gc.frequency) lines.push(`- GC 频率: ${gc.frequency}`)
+      if (gc.warning) lines.push(`- GC 警告: ${gc.warning}`)
+      if (gc.collectors?.length || gc.frequency || gc.warning) lines.push('')
+    }
+
+    // Main thread top methods
+    const mainThread = normalized.profiler.threads.find(
+      (t) => t.type === 'main' || t.name.toLowerCase().includes('server thread'),
+    )
+    if (mainThread?.topMethods?.length) {
+      lines.push('### 主线程 Top 方法')
+      for (const m of mainThread.topMethods.slice(0, 8)) {
+        const pct = m.percent !== undefined ? ` (${m.percent}%)` : ''
+        const src = m.source ? ` [${m.source}]` : ''
+        lines.push(`- ${m.name}${pct}${src}`)
+      }
+      lines.push('')
+    }
+
+    // Source confidence summary
+    const sources = normalized.profiler.sources
+    if (sources?.length) {
+      lines.push('### 来源置信度摘要')
+      const highSources = sources.filter((s) => s.totalPercent !== undefined && s.totalPercent > 5)
+      const lowSources = sources.filter((s) => s.totalPercent === undefined || s.totalPercent <= 5)
+      if (highSources.length) {
+        lines.push(`- 高占比来源 (>5%): ${highSources.map((s) => `${s.name}(${s.totalPercent}%)`).join(', ')}`)
+      }
+      if (lowSources.length) {
+        lines.push(`- 低占比/未知来源: ${lowSources.map((s) => s.name).join(', ')}`)
+      }
+      lines.push('')
+    }
+
+    // Known limitations
+    const limitations = normalized.limitations
+    if (limitations?.length) {
+      lines.push('### 已知数据限制')
+      for (const l of limitations) {
+        lines.push(`- ${l}`)
+      }
+      lines.push('')
+    }
+
+    lines.push('请基于以上证据上下文和输入数据进行分析，不要编造不存在的数据。')
+    lines.push('---')
+
+    return lines.join('\n')
   }
 
   private defaultSystemPrompt(): string {
@@ -100,7 +209,7 @@ export class PromptBuilder {
     return JSON.stringify({
       one_sentence_summary: '不超过80字的一句话总结',
       severity: 'normal|low|medium|high|critical',
-      beginner_explanation: '小白解释，不超过500字',
+      beginner_explanation: { summary: '小白解释摘要', details: '详细解释（可选）' },
       key_evidence: [
         { title: '', explanation: '', confidence: 'high|medium|low' },
       ],
@@ -110,8 +219,8 @@ export class PromptBuilder {
       fix_plan: [
         { priority: 1, action: '', difficulty: 'easy|medium|hard', risk: 'low|medium|high', expected_effect: '' },
       ],
-      retest_commands: [''],
-      missing_information: [''],
+      retest_commands: [{ command: '', description: '命令说明（可选）' }],
+      missing_information: [{ question: '', why: '为什么需要这个信息（可选）' }],
       markdown_report: '简短Markdown摘要，不超过1200字。后端会据此生成最终报告',
     })
   }

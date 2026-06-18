@@ -9,6 +9,7 @@ export interface ChatCompletionOptions {
   temperature?: number
   maxTokens?: number
   timeoutMs?: number
+  responseFormat?: 'json_object' | 'text'
 }
 
 export interface ChatCompletionResult {

@@ -35,13 +35,28 @@ export interface ReportStatus {
 export interface AiResult {
   one_sentence_summary: string
   severity: string
-  beginner_explanation: string
+  beginner_explanation: BeginnerExplanation | string  // object (canonical) or string (legacy compat)
   key_evidence: KeyEvidence[]
   suspected_causes: SuspectedCause[]
   fix_plan: FixPlanItem[]
-  retest_commands: string[]
-  missing_information: string[]
-  markdown_report: string
+  retest_commands: (RetestCommand | string)[]  // object[] (canonical) or string[] (legacy)
+  missing_information: (MissingInfo | string)[]  // object[] (canonical) or string[] (legacy)
+  markdown_report?: string
+}
+
+export interface BeginnerExplanation {
+  summary: string
+  details?: string
+}
+
+export interface RetestCommand {
+  command: string
+  description?: string
+}
+
+export interface MissingInfo {
+  question: string
+  why?: string
 }
 
 export interface KeyEvidence {

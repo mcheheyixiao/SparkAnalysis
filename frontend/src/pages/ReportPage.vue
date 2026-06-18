@@ -81,105 +81,8 @@
           </div>
         </n-card>
 
-        <!-- AI Result -->
+        <!-- AI Result Summary only — full report is markdownReport -->
         <div ref="sectionRef">
-        <template v-if="aiResult">
-          <n-card class="report-section-card reveal-section" :bordered="true" title="核心证据">
-            <evidence-list :evidence="aiResult.key_evidence || []" />
-          </n-card>
-
-          <n-card
-            class="report-section-card reveal-section"
-            :bordered="true"
-            title="疑似原因"
-            v-if="aiResult.suspected_causes?.length"
-          >
-            <div v-for="cause in aiResult.suspected_causes" :key="cause.rank" class="cause-item">
-              <div class="cause-header">
-                <n-tag type="info" :bordered="false" size="tiny">#{{ cause.rank }}</n-tag>
-                <span class="cause-name">{{ cause.name }}</span>
-                <n-tag
-                  :type="cause.confidence === 'high' ? 'success' : cause.confidence === 'medium' ? 'warning' : 'default'"
-                  :bordered="false"
-                  size="tiny"
-                >
-                  {{ cause.confidence === 'high' ? '高置信' : cause.confidence === 'medium' ? '中置信' : '低置信' }}
-                </n-tag>
-              </div>
-              <p class="cause-reason">{{ cause.reason }}</p>
-              <p class="cause-verify" v-if="cause.how_to_verify">
-                <strong>如何验证：</strong>{{ cause.how_to_verify }}
-              </p>
-            </div>
-          </n-card>
-
-          <n-card
-            class="report-section-card reveal-section"
-            :bordered="true"
-            title="修复建议"
-            v-if="aiResult.fix_plan?.length"
-          >
-            <div v-for="fix in aiResult.fix_plan" :key="fix.priority" class="fix-item">
-              <div class="fix-header">
-                <n-tag type="success" :bordered="false" size="tiny">优先级 {{ fix.priority }}</n-tag>
-                <span class="fix-action">{{ fix.action }}</span>
-              </div>
-              <n-space :size="8" class="fix-tags">
-                <n-tag :bordered="false" size="tiny">
-                  难度: {{ fix.difficulty === 'easy' ? '简单' : fix.difficulty === 'medium' ? '中等' : '困难' }}
-                </n-tag>
-                <n-tag :bordered="false" size="tiny">
-                  风险: {{ fix.risk === 'low' ? '低' : fix.risk === 'medium' ? '中' : '高' }}
-                </n-tag>
-              </n-space>
-              <p class="fix-effect" v-if="fix.expected_effect">{{ fix.expected_effect }}</p>
-            </div>
-          </n-card>
-
-          <!-- Beginner explanation -->
-          <n-card
-            class="report-section-card reveal-section"
-            :bordered="true"
-            title="小白解释"
-            v-if="aiResult.beginner_explanation"
-          >
-            <n-alert type="info" :bordered="false">
-              {{ aiResult.beginner_explanation }}
-            </n-alert>
-          </n-card>
-
-          <!-- Retest commands -->
-          <n-card
-            class="report-section-card reveal-section"
-            :bordered="true"
-            title="复测命令"
-            v-if="aiResult.retest_commands?.length"
-          >
-            <n-code v-for="cmd in aiResult.retest_commands" :key="cmd" :code="cmd" language="bash" />
-          </n-card>
-
-          <!-- Missing information -->
-          <n-card
-            class="report-section-card reveal-section"
-            :bordered="true"
-            title="缺少的信息"
-            v-if="aiResult.missing_information?.length"
-          >
-            <ul class="missing-list">
-              <li v-for="(info, idx) in aiResult.missing_information" :key="idx">{{ info }}</li>
-            </ul>
-          </n-card>
-        </template>
-
-        <!-- No AI result notice -->
-        <n-alert
-          v-if="!aiResult && report.summary"
-          type="info"
-          :bordered="false"
-          class="no-ai-notice"
-          title="管理员已关闭完整 AI JSON 保存，当前展示的是可读报告摘要。"
-        />
-
         <!-- Fallback warning -->
         <n-alert
           v-if="report.isFallback"
@@ -191,7 +94,16 @@
           AI 结构化输出可能异常，系统已自动使用规则预分析生成可读报告。建议重新分析或联系管理员检查 AI 配置。
         </n-alert>
 
-        <!-- Markdown report -->
+        <!-- No AI result notice -->
+        <n-alert
+          v-if="!aiResult && report.summary"
+          type="info"
+          :bordered="false"
+          class="no-ai-notice"
+          title="管理员已关闭完整 AI JSON 保存，当前展示的是可读报告摘要。"
+        />
+
+        <!-- Markdown report (the single source of truth for display) -->
         <n-card class="report-section-card reveal-section" :bordered="true" title="完整诊断报告">
           <markdown-report :content="displayMarkdown" />
         </n-card>
@@ -225,7 +137,6 @@ import { formatDate, reportTypeLabel } from '@/utils/format'
 import PublicLayout from '@/layouts/PublicLayout.vue'
 import SeverityBadge from '@/components/public/SeverityBadge.vue'
 import MetricCard from '@/components/public/MetricCard.vue'
-import EvidenceList from '@/components/public/EvidenceList.vue'
 import MarkdownReport from '@/components/public/MarkdownReport.vue'
 import ErrorState from '@/components/common/ErrorState.vue'
 import { gsap, ScrollTrigger } from '@/plugins/gsap'
@@ -314,7 +225,7 @@ const displayMarkdown = computed(() => {
 const sectionRef = ref<HTMLElement | null>(null)
 const prefersReduced = getPrefersReducedMotion()
 let scrollCtx: gsap.Context | null = null
-const dataReady = computed(() => !!aiResult.value)
+const dataReady = computed(() => report.value.status === 'completed')
 
 function initScrollReveal() {
   if (!sectionRef.value) return

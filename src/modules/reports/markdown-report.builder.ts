@@ -1,4 +1,4 @@
-import type { AiAnalysisOutput } from '../ai/ai.types.js'
+import type { AiAnalysisOutput, AiDiagnosisResult, BeginnerExplanation, RetestCommand, MissingInfo } from '../ai/ai.types.js'
 import type { RuleAnalysisResult } from '../spark/spark.types.js'
 
 // ── Unified display markdown builder ─────────────────────────────
@@ -43,19 +43,39 @@ function safeStr(s: unknown, fallback = ''): string {
   return fallback
 }
 
+/** Render beginner_explanation (object or string) as display text */
+export function renderBeginnerExplanation(be: BeginnerExplanation | string | null | undefined): string {
+  if (!be) return ''
+  if (typeof be === 'string') return be
+  if (be.details) return `${be.summary}\n\n${be.details}`
+  return be.summary || ''
+}
+
+/** Render a retest command (object or string) as display text */
+function renderRetestCommand(rc: RetestCommand | string): string {
+  if (typeof rc === 'string') return `- \`${rc}\``
+  if (rc.description) return `- \`${rc.command}\` — ${rc.description}`
+  return `- \`${rc.command}\``
+}
+
+/** Render a missing info item (object or string) as display text */
+function renderMissingInfo(mi: MissingInfo | string): string {
+  if (typeof mi === 'string') return `- ${mi}`
+  if (mi.why) return `- **${mi.question}**：${mi.why}`
+  return `- ${mi.question}`
+}
+
+/** Render a string list as markdown bullets (used by fallback report) */
 function list(items: string[]): string {
   return items.map((i) => `- ${i}`).join('\n')
 }
 
 // ── From successful AI structured result ────────────────────────
 
-export function buildMarkdownReportFromAiResult(ai: AiAnalysisOutput): string {
-  // If ai.markdown_report is already valid Markdown, use it directly
-  if (ai.markdown_report && !looksLikeJsonText(ai.markdown_report)) {
-    return ai.markdown_report
-  }
+export function buildMarkdownReportFromAiResult(ai: AiDiagnosisResult): string {
+  // NEVER trust ai.markdown_report directly — always build from structured fields
+  // to guarantee clean, valid Markdown regardless of AI output quality.
 
-  // Otherwise build from structured fields
   const lines: string[] = []
 
   lines.push('# 总结')
@@ -63,10 +83,12 @@ export function buildMarkdownReportFromAiResult(ai: AiAnalysisOutput): string {
   lines.push(ai.one_sentence_summary || '(未提供总结)')
   lines.push('')
 
-  if (ai.beginner_explanation) {
+  // Beginner explanation (canonical form is object, handle both)
+  const beText = renderBeginnerExplanation(ai.beginner_explanation)
+  if (beText) {
     lines.push('## 小白解释')
     lines.push('')
-    lines.push(ai.beginner_explanation)
+    lines.push(beText)
     lines.push('')
   }
 
@@ -112,14 +134,18 @@ export function buildMarkdownReportFromAiResult(ai: AiAnalysisOutput): string {
   if (ai.retest_commands?.length) {
     lines.push('## 复测命令')
     lines.push('')
-    lines.push(list(ai.retest_commands))
+    for (const rc of ai.retest_commands) {
+      lines.push(renderRetestCommand(rc))
+    }
     lines.push('')
   }
 
   if (ai.missing_information?.length) {
     lines.push('## 缺失信息')
     lines.push('')
-    lines.push(list(ai.missing_information))
+    for (const mi of ai.missing_information) {
+      lines.push(renderMissingInfo(mi))
+    }
     lines.push('')
   }
 
