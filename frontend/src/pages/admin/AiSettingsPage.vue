@@ -8,10 +8,10 @@
           <n-input v-model:value="form.provider" placeholder="deepseek" :maxlength="32" />
         </n-form-item>
         <n-form-item label="Base URL">
-          <n-input v-model:value="form.baseUrl" placeholder="https://api.deepseek.com/v1" :maxlength="512" />
+          <n-input v-model:value="form.baseUrl" placeholder="https://api.deepseek.com" :maxlength="512" />
         </n-form-item>
         <n-form-item label="Model">
-          <n-input v-model:value="form.model" placeholder="deepseek-chat" :maxlength="128" />
+          <n-input v-model:value="form.model" placeholder="deepseek-v4-pro" :maxlength="128" />
         </n-form-item>
         <n-form-item label="API Key">
           <n-input
@@ -83,8 +83,8 @@ const message = useMessage()
 
 const form = ref<AiSettingsUpdate & { enabled: boolean }>({
   provider: 'deepseek',
-  baseUrl: 'https://api.deepseek.com/v1',
-  model: 'deepseek-chat',
+  baseUrl: 'https://api.deepseek.com',
+  model: 'deepseek-v4-pro',
   apiKey: '',
   temperature: 0.3,
   maxTokens: 4096,

@@ -133,8 +133,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
         success: true,
         data: {
           provider: 'deepseek',
-          baseUrl: 'https://api.deepseek.com/v1',
-          model: 'deepseek-chat',
+          baseUrl: 'https://api.deepseek.com',
+          model: 'deepseek-v4-pro',
           apiKeyMasked: '',
           temperature: 0.3,
           maxTokens: 4096,
@@ -197,9 +197,9 @@ export async function adminRoutes(fastify: FastifyInstance) {
         data: {
           id: randomUUID(),
           provider: data.provider ?? 'deepseek',
-          baseUrl: data.baseUrl ?? 'https://api.deepseek.com/v1',
+          baseUrl: data.baseUrl ?? 'https://api.deepseek.com',
           apiKeyEncrypted: data.apiKey ? encryptApiKey(data.apiKey) : '',
-          model: data.model ?? 'deepseek-chat',
+          model: data.model ?? 'deepseek-v4-pro',
           temperature: data.temperature ?? 0.3,
           maxTokens: data.maxTokens ?? 4096,
           timeoutMs: data.timeoutMs ?? 60000,
@@ -257,9 +257,9 @@ export async function adminRoutes(fastify: FastifyInstance) {
       const d = parsed.data
       config = {
         provider: d.provider ?? 'deepseek',
-        baseUrl: d.baseUrl ?? 'https://api.deepseek.com/v1',
+        baseUrl: d.baseUrl ?? 'https://api.deepseek.com',
         apiKey: d.apiKey!,
-        model: d.model ?? 'deepseek-chat',
+        model: d.model ?? 'deepseek-v4-pro',
         temperature: 0.3,
         maxTokens: 64,
         timeoutMs: 15000,

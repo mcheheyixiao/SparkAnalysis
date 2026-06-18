@@ -58,9 +58,9 @@ async function main() {
       data: {
         id: randomUUID(),
         provider: 'deepseek',
-        baseUrl: 'https://api.deepseek.com/v1',
+        baseUrl: 'https://api.deepseek.com',
         apiKeyEncrypted: '',
-        model: 'deepseek-chat',
+        model: 'deepseek-v4-pro',
         temperature: 0.3,
         maxTokens: 4096,
         timeoutMs: 60000,

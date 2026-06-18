@@ -52,7 +52,14 @@ export class DeepSeekProvider implements IAIProvider {
       const body = await response.body.text()
 
       if (!response.statusCode || response.statusCode >= 400) {
-        throw new AppError('AI_ERROR', `AI 服务返回错误 (${response.statusCode})`)
+        let apiError = `HTTP ${response.statusCode}`
+        try {
+          const errJson = JSON.parse(body)
+          if (errJson?.error?.message) {
+            apiError = errJson.error.message
+          }
+        } catch { /* use default */ }
+        throw new AppError('AI_ERROR', `AI 服务返回错误 (${response.statusCode}): ${apiError}`)
       }
 
       let json: any
@@ -63,12 +70,16 @@ export class DeepSeekProvider implements IAIProvider {
       }
 
       const choice = json?.choices?.[0]
-      if (!choice?.message?.content) {
+      // DeepSeek V4 models may return reasoning_content (thinking tokens) alongside or
+      // instead of content. Always prefer the final content, but fall back to reasoning.
+      const finalContent = choice?.message?.content || choice?.message?.reasoning_content
+      if (!finalContent) {
+        console.error('[DeepSeek] Unexpected response:', JSON.stringify(json).slice(0, 500))
         throw new AppError('AI_ERROR', 'AI 返回内容为空')
       }
 
       return {
-        content: choice.message.content,
+        content: finalContent,
         model: json.model || model,
         inputTokens: json.usage?.prompt_tokens,
         outputTokens: json.usage?.completion_tokens,

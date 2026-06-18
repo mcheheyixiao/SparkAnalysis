@@ -16,7 +16,7 @@
             </template>
             如何使用 spark
           </n-button>
-          <n-button text tag="router-link" to="/admin">
+          <n-button text @click="handleGoAdmin">
             <template #icon>
               <n-icon>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -43,7 +43,14 @@
 </template>
 
 <script setup lang="ts">
+import { useRouter } from 'vue-router'
 import AppLogo from '@/components/common/AppLogo.vue'
+
+const router = useRouter()
+
+function handleGoAdmin() {
+  router.push('/admin')
+}
 </script>
 
 <style scoped>
