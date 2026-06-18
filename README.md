@@ -50,6 +50,31 @@
 - **安全防护** — SSRF 防护、IP 哈希存储、API Key AES-256-GCM 加密、多层级限流、Helmet 安全头
 - **优雅关闭** — SIGTERM/SIGINT 优雅关闭，等待进行中任务完成，超时标记失败
 
+## Spark 数据采集
+
+本项目使用 spark 官方 JSON API 采集报告数据，不使用网页爬虫。
+
+- **`?raw=1`** — 默认获取 spark 报告的 metadata（JSON 格式），包含 TPS、MSPT、来源列表、平台信息等基础元数据。这是默认的采集方式。
+- **`?raw=1&full=true`** — 当报告类型为 sampler 或 unknown 时，系统会额外尝试获取完整数据。full=true 返回的 JSON 包含完整的线程调用树（threads）、时间窗口统计（timeWindowStatistics）、类/方法来源映射（classSources/methodSources），但数据量可能达到数十 MB。
+- **`&path=` (JSONPath)** — spark 官方支持 JSONPath 过滤（如 `?raw=1&path=metadata.platform`），但本项目当前出于安全考虑未开放此参数。
+- **SSRF 防护** — `safeFetch` 仅允许 HTTPS 请求 `spark.lucko.me`，query 参数白名单仅限 `raw=1` 和 `full=true`，严格校验路径和域名。
+- **前端不直接请求 spark** — 所有 spark 数据抓取由后端完成，前端仅通过后端 API 获取分析结果。
+- **protobuf / spark-usercontent** — spark 原始数据以 protobuf 格式存储在 `spark-usercontent.lucko.me/{code}`，此为后续增强路线。当前使用 JSON raw endpoint 已能满足分析需求。
+
+## 来源分析分级
+
+系统在分析 spark 报告时，会区分「来源线索」和「疑似根因」：
+
+| 情况 | 置信度 | 是否可作根因 |
+|------|--------|-------------|
+| 仅出现在 metadata.sources 列表中 | 低 | 否 |
+| 出现在主线程方法栈，占比 < 5% | 低 | 否 |
+| 出现在主线程方法栈，占比 5%–15% | 中 | 是 |
+| 出现在主线程方法栈，占比 ≥ 15% | 高 | 是 |
+| 通用 Java / native / Minecraft 方法 | — | 否（无法归因到具体模组/插件） |
+
+AI 分析失败时，系统会使用规则预分析结果生成干净的 Markdown 兜底报告，普通用户页面不会展示原始 JSON 数据。
+
 ## 快速开始
 
 ### 环境要求

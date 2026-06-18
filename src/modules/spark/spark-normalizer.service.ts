@@ -293,19 +293,49 @@ export class SparkNormalizer {
     }
 
     // --- Sources ---
+    // Sources from metadata are name-only (no percent). Enrich with method-level
+    // evidence from classSources/methodSources in the full=true data.
     const rawSources =
       raw?.sampler?.sources || raw?.profiler?.sources || raw?.sources
       || full?.sampler?.sources || full?.profiler?.sources || full?.sources
+      || full?.metadata?.sources || raw?.metadata?.sources
       || this.findFirstDeep<any>(raw, ['sources'])
       || this.findFirstDeep<any>(full, ['sources'])
 
+    // Build source reverse index from classSources/methodSources (full=true data)
+    const sourceIndex = this.buildSourceIndex(full)
+
     if (rawSources && typeof rawSources === 'object') {
       for (const [name, data] of Object.entries(rawSources) as [string, any][]) {
+        // Compute source percent from thread methods that match this source
+        const matchedMethods: string[] = []
+        let computedPercent: number | undefined = data?.percent ?? data?.totalPercent
+
+        // If no explicit percent, try to compute from thread data
+        if (computedPercent == null && sourceIndex.size > 0) {
+          const mainThread = threads.find(t => t.type === 'main' || t.name.toLowerCase().includes('server thread'))
+          if (mainThread?.topMethods) {
+            for (const m of mainThread.topMethods) {
+              const lookupKey = m.packageName ? `${m.packageName}.${m.name}`.replace(/\.+/g, '.') : m.name
+              const src = this.lookupSource(sourceIndex, lookupKey, m.name)
+              if (src === name) {
+                matchedMethods.push(m.name)
+                computedPercent = (computedPercent || 0) + (m.percent || 0)
+              }
+            }
+          }
+        }
+
+        // Determine if this source appears on the main thread
+        const appearsOnMainThread = matchedMethods.length > 0
+
         sources.push({
           name,
           type: this.classifySourceType(name),
-          totalPercent: data?.percent ?? data?.totalPercent,
-          evidence: data?.evidence,
+          totalPercent: computedPercent != null ? Math.round(computedPercent * 100) / 100 : undefined,
+          evidence: appearsOnMainThread
+            ? [`主线程发现 ${matchedMethods.length} 个关联方法，累计占比 ${(computedPercent || 0).toFixed(1)}%`]
+            : (data?.evidence || undefined),
         })
       }
     }
@@ -332,9 +362,17 @@ export class SparkNormalizer {
       limitations.push('线程数据未包含方法级调用栈，无法定位具体热点方法')
     }
 
-    // If sources exist but none are on main thread, note it
+    // If sources exist but none have thread evidence, note it
     if (sources.length > 0 && sourcesWithPercent.length === 0) {
-      limitations.push('缺少完整 profiler 调用树数据，建议使用 /spark profiler --timeout 120 重新采集以获取方法级热点和精确占比')
+      limitations.push('缺少完整 profiler 调用树 + 来源占比数据，建议使用 /spark profiler --timeout 120 重新采集以获取方法级热点和精确占比')
+    }
+
+    // Sampler vs profiler note
+    if (threads.length > 0 && reportType === 'sampler') {
+      const isProfiler = raw?.metadata?.samplerEngine === 1 || full?.metadata?.samplerEngine === 1
+      if (!isProfiler) {
+        limitations.push('当前数据来自 sampler（采样器），仅能提供有限的方法热点线索。建议使用 /spark profiler --timeout 120 采集更精确的调用树数据')
+      }
     }
 
     return { threads, sources, suspiciousMethods }
@@ -355,24 +393,122 @@ export class SparkNormalizer {
       totalPercent: percent,
     }
 
+    // Collect methods from the call tree (spark uses recursive children).
+    // Spark sampler nodes use { className, methodName, time, children, childrenRefs }.
     const children = node?.children || node?.nodes || node?.methods || []
     if (Array.isArray(children) && children.length > 0) {
-      thread.topMethods = children.slice(0, 10).map((c: any) => this.parseMethodNode(c))
+      // Walk the call tree to collect all methods with their times
+      const allMethods = this.collectMethodsFromTree(children, 0)
+      // Sort by time descending, take top 30
+      allMethods.sort((a, b) => (b.time || 0) - (a.time || 0))
+      // Calculate total time for percent computation
+      const totalTime = allMethods.reduce((sum, m) => sum + (m.time || 0), 0)
+      thread.topMethods = allMethods.slice(0, 30).map(m => this.parseMethodNode(m, totalTime))
     }
 
     return thread
   }
 
-  private parseMethodNode(node: any): any {
-    if (!node) return { name: 'unknown' }
-    return {
-      name: node?.name || node?.method || node?.className || 'unknown',
-      packageName: node?.packageName || node?.package || node?.className,
-      source: node?.source || node?.origin,
-      percent: this.toNumber(node?.percent) ?? this.toNumber(node?.totalPercent),
-      selfPercent: this.toNumber(node?.selfPercent) ?? this.toNumber(node?.selfTimePercent),
-      totalPercent: this.toNumber(node?.totalPercent) ?? this.toNumber(node?.percent),
+  /**
+   * Recursively collect method nodes from the spark call tree.
+   * Each node has: className, methodName, time, children, childrenRefs
+   * Returns flat array with { className, methodName, time, children, ... }
+   */
+  private collectMethodsFromTree(nodes: any[], depth: number): any[] {
+    const result: any[] = []
+    const maxDepth = 50
+    if (depth > maxDepth) return result
+
+    for (const node of nodes) {
+      if (!node) continue
+      result.push(node)
+      const subChildren = node?.children || []
+      if (Array.isArray(subChildren) && subChildren.length > 0) {
+        result.push(...this.collectMethodsFromTree(subChildren, depth + 1))
+      }
     }
+    return result
+  }
+
+  private parseMethodNode(node: any, totalTime?: number): any {
+    if (!node) return { name: 'unknown' }
+    // Spark sampler format: { className, methodName, time, ... }
+    // Other formats: { name, percent, ... }
+    const methodDisplayName = node?.methodName
+      ? `${node.className || ''}.${node.methodName}`.replace(/^\./, '')
+      : node?.name || node?.method || node?.className || 'unknown'
+
+    const pkgName = node?.packageName || node?.package || node?.className || undefined
+
+    // Calculate percent from time
+    let percent: number | undefined = this.toNumber(node?.percent) ?? this.toNumber(node?.totalPercent)
+    if (percent == null && totalTime != null && totalTime > 0 && this.toNumber(node?.time) != null) {
+      percent = (this.toNumber(node!.time)! / totalTime) * 100
+    }
+
+    return {
+      name: methodDisplayName,
+      packageName: pkgName,
+      source: node?.source || node?.origin,
+      percent,
+      selfPercent: this.toNumber(node?.selfPercent) ?? this.toNumber(node?.selfTimePercent),
+      totalPercent: percent,
+    }
+  }
+
+  // ========== Source-to-method mapping (from full=true classSources/methodSources) ==========
+
+  /**
+   * Build a reverse index from class/method descriptor to source name.
+   * Spark full=true data has classSources and methodSources objects.
+   */
+  private buildSourceIndex(full: any): Map<string, string> {
+    const index = new Map<string, string>()
+
+    // classSources: maps class ref ID → source name
+    // e.g. { "1": "forge", "2": "minecraft", ... }
+    // But in JSON, it might be { "net.minecraft.server.MinecraftServer": "minecraft", ... }
+    const classSources = full?.classSources
+    if (classSources && typeof classSources === 'object') {
+      for (const [key, val] of Object.entries(classSources) as [string, any][]) {
+        if (typeof val === 'string') {
+          index.set(key, val)
+        }
+      }
+    }
+
+    // methodSources: maps method descriptor → source name
+    const methodSources = full?.methodSources
+    if (methodSources && typeof methodSources === 'object') {
+      for (const [key, val] of Object.entries(methodSources) as [string, any][]) {
+        if (typeof val === 'string') {
+          index.set(key, val)
+        }
+      }
+    }
+
+    return index
+  }
+
+  /**
+   * Look up which source a method belongs to.
+   * Tries exact match, then partial, then class-only match.
+   */
+  private lookupSource(index: Map<string, string>, fullMethodName: string, shortName: string): string | undefined {
+    if (index.size === 0) return undefined
+
+    // Exact match
+    if (index.has(fullMethodName)) return index.get(fullMethodName)
+    if (index.has(shortName)) return index.get(shortName)
+
+    // Try matching by class name prefix
+    for (const [key, src] of index.entries()) {
+      if (fullMethodName.includes(key) || key.includes(fullMethodName.split('.')[0] || '')) {
+        return src
+      }
+    }
+
+    return undefined
   }
 
   // ========== Helper utilities ==========

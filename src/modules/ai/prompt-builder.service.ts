@@ -72,7 +72,7 @@ export class PromptBuilder {
     // TPS
     const tps = normalized.health?.tps
     if (tps && (tps.latest !== undefined || tps.mean !== undefined)) {
-      lines.push('### TPS')
+      lines.push('### TPS（健康指标 — 只能说明存在问题，不能直接指向根因）')
       if (tps.latest !== undefined) lines.push(`- 最新 TPS: ${tps.latest}`)
       if (tps.mean !== undefined) lines.push(`- 平均 TPS: ${tps.mean}`)
       if (tps.min !== undefined) lines.push(`- 最低 TPS: ${tps.min}`)
@@ -83,8 +83,8 @@ export class PromptBuilder {
     // MSPT
     const mspt = normalized.health?.mspt
     if (mspt && (mspt.mean !== undefined || mspt.p95 !== undefined)) {
-      lines.push('### MSPT')
-      if (mspt.mean !== undefined) lines.push(`- 平均 MSPT: ${mspt.mean}ms`)
+      lines.push('### MSPT（主线程每 tick 耗时 — 高 MSPT 说明主线程瓶颈）')
+      if (mspt.mean !== undefined) lines.push(`- 平均 MSPT: ${mspt.mean}ms（目标 < 50ms）`)
       if (mspt.median !== undefined) lines.push(`- 中位 MSPT: ${mspt.median}ms`)
       if (mspt.p95 !== undefined) lines.push(`- P95 MSPT: ${mspt.p95}ms`)
       if (mspt.max !== undefined) lines.push(`- 最大 MSPT: ${mspt.max}ms`)
@@ -124,11 +124,13 @@ export class PromptBuilder {
       (t) => t.type === 'main' || t.name.toLowerCase().includes('server thread'),
     )
     if (mainThread?.topMethods?.length) {
-      lines.push('### 主线程 Top 方法')
+      lines.push('### 主线程 Top 方法（最热的内核级方法）')
+      lines.push('注意：这些是采样到的方法调用，仅代表 CPU 时间分布，不等同于某个模组/插件的开销。')
       for (const m of mainThread.topMethods.slice(0, 8)) {
-        const pct = m.percent !== undefined ? ` (${m.percent}%)` : ''
-        const src = m.source ? ` [${m.source}]` : ''
-        lines.push(`- ${m.name}${pct}${src}`)
+        const pct = m.percent !== undefined ? ` (${m.percent.toFixed(1)}%)` : ''
+        const src = m.source ? ` [来源: ${m.source}]` : ''
+        const interpretation = this.classifyMethodType(m.name, m.packageName)
+        lines.push(`- ${m.name}${pct}${src} — ${interpretation}`)
       }
       lines.push('')
     }
@@ -137,13 +139,25 @@ export class PromptBuilder {
     const sources = normalized.profiler.sources
     if (sources?.length) {
       lines.push('### 来源置信度摘要')
-      const highSources = sources.filter((s) => s.totalPercent !== undefined && s.totalPercent > 5)
-      const lowSources = sources.filter((s) => s.totalPercent === undefined || s.totalPercent <= 5)
+      lines.push('来源分析规则：')
+      lines.push('- 仅出现在 metadata.sources 列表 → 低置信线索，不能作为根因')
+      lines.push('- 出现在主线程方法栈 + 占比 ≥5% → 中置信')
+      lines.push('- 出现在主线程方法栈 + 占比 ≥15% → 高置信')
+      lines.push('- 源码为 generic Java/native/Minecraft → 无法进一步归因到具体模组')
+      lines.push('')
+
+      const highSources = sources.filter((s) => s.totalPercent !== undefined && s.totalPercent > 5 && s.evidence?.length)
+      const midSources = sources.filter((s) => s.totalPercent !== undefined && s.totalPercent > 0 && s.totalPercent <= 5 && s.evidence?.length)
+      const lowSources = sources.filter((s) => s.totalPercent === undefined || s.totalPercent === 0 || !s.evidence?.length)
+
       if (highSources.length) {
-        lines.push(`- 高占比来源 (>5%): ${highSources.map((s) => `${s.name}(${s.totalPercent}%)`).join(', ')}`)
+        lines.push(`🔴 高占比+有主线程证据 (>5%): ${highSources.map((s) => `${s.name}(${s.totalPercent}%)`).join(', ')}`)
+      }
+      if (midSources.length) {
+        lines.push(`🟡 中占比+有主线程证据 (≤5%): ${midSources.map((s) => `${s.name}(${s.totalPercent}%)`).join(', ')}`)
       }
       if (lowSources.length) {
-        lines.push(`- 低占比/未知来源: ${lowSources.map((s) => s.name).join(', ')}`)
+        lines.push(`🟢 低置信/无主线程证据: ${lowSources.map((s) => s.name).join(', ')}`)
       }
       lines.push('')
     }
@@ -162,6 +176,29 @@ export class PromptBuilder {
     lines.push('---')
 
     return lines.join('\n')
+  }
+
+  /**
+   * Classify a method as generic Java, Minecraft native, or user-mod-related
+   * to help the AI avoid misattributing generic methods.
+   */
+  private classifyMethodType(name: string, pkg?: string): string {
+    const full = `${pkg || ''}.${name || ''}`.toLowerCase()
+    // Native / JVM internal
+    if (name.startsWith('native.') || name.includes('jvm') || name.includes('[vdso]')) return 'JVM原生方法'
+    // Generic Java
+    if (full.includes('java.') || full.includes('sun.') || full.includes('jdk.')) return 'Java标准库'
+    // Minecraft internals
+    if (full.includes('net.minecraft') || full.includes('com.mojang')) return 'Minecraft内部方法'
+    // Forge internals
+    if (full.includes('net.minecraftforge')) return 'Forge框架方法'
+    // Fabric internals
+    if (full.includes('net.fabricmc')) return 'Fabric框架方法'
+    // Thread scheduling / sleep / wait
+    if (full.includes('wait') || full.includes('sleep') || full.includes('park') || full.includes('yield')) return '线程等待（非热点）'
+    // Mod/plugin related
+    if (full.includes('ftb') || full.includes('luckperms') || full.includes('essentials')) return '可能关联模组/插件方法'
+    return '未知类型方法'
   }
 
   private defaultSystemPrompt(): string {

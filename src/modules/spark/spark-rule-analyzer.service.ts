@@ -64,6 +64,8 @@ export class SparkRuleAnalyzer {
         title: 'TPS 偏低',
         detail: `TPS 为 ${effectiveTps.toFixed(1)}（目标 20），服务器存在性能问题`,
         confidence: 'high',
+        type: 'health_issue',
+        canBeRootCause: false,
       })
     }
 
@@ -72,6 +74,8 @@ export class SparkRuleAnalyzer {
         title: '严重卡顿',
         detail: `最低 TPS 为 ${tps.min.toFixed(1)}，服务器存在严重卡顿`,
         confidence: 'high',
+        type: 'health_issue',
+        canBeRootCause: false,
       })
     }
 
@@ -80,6 +84,8 @@ export class SparkRuleAnalyzer {
         title: 'TPS 波动较大',
         detail: `TPS 范围 ${tps.min.toFixed(1)}-${tps.max.toFixed(1)}，波动 ${(tps.max - tps.min).toFixed(1)}，服务器性能不稳定`,
         confidence: 'medium',
+        type: 'health_issue',
+        canBeRootCause: false,
       })
     }
 
@@ -106,12 +112,16 @@ export class SparkRuleAnalyzer {
           title: 'MSPT 过高 — 明显卡顿风险',
           detail: `MSPT ${effectiveMean.toFixed(1)}ms（阈值 50ms），服务器每 tick 计算时间严重超出预算`,
           confidence: 'high',
+          type: 'health_issue',
+          canBeRootCause: false,
         })
       } else if (effectiveMean >= 40) {
         evidence.push({
           title: 'MSPT 接近压力边界',
           detail: `MSPT ${effectiveMean.toFixed(1)}ms，接近 50ms 上限，高负载时可能卡顿`,
           confidence: 'medium',
+          type: 'health_issue',
+          canBeRootCause: false,
         })
       }
     }
@@ -121,6 +131,8 @@ export class SparkRuleAnalyzer {
         title: '偶发 MSPT 峰值',
         detail: `最大 MSPT ${mspt.max.toFixed(1)}ms 明显高于平均 ${effectiveMean.toFixed(1)}ms，存在偶发卡顿`,
         confidence: 'medium',
+        type: 'health_issue',
+        canBeRootCause: false,
       })
     }
 
@@ -145,6 +157,8 @@ export class SparkRuleAnalyzer {
         title: '主线程瓶颈',
         detail: `主线程占用 ${mainThread.totalPercent.toFixed(1)}%，服务器主要卡在主线程处理上`,
         confidence: 'high',
+        type: 'system_metric',
+        canBeRootCause: false,
       })
 
       // Check methods for common patterns
@@ -179,6 +193,8 @@ export class SparkRuleAnalyzer {
         title: '内存使用率高',
         detail: `内存使用率 ${mem.usagePercent}%（${mem.usedMB ?? '?'}MB/${mem.maxMB ?? '?'}MB），接近上限`,
         confidence: 'high',
+        type: 'system_metric',
+        canBeRootCause: false,
       })
       causes.push({
         name: '内存压力',
@@ -195,6 +211,8 @@ export class SparkRuleAnalyzer {
         title: 'GC 警告',
         detail: data.health.gc.warning,
         confidence: 'medium',
+        type: 'system_metric',
+        canBeRootCause: false,
       })
     }
   }
@@ -246,6 +264,8 @@ export class SparkRuleAnalyzer {
                 title: `检测到插件 ${info.label}`,
                 detail: `${info.label} 在主线程有一定占比，需结合上下文判断是否为主要瓶颈`,
                 confidence: 'low',
+                type: 'source_hint',
+                canBeRootCause: false,
               })
             }
           }
@@ -259,17 +279,43 @@ export class SparkRuleAnalyzer {
     // sufficient evidence to blame a specific mod/plugin.
     for (const source of data.profiler.sources) {
       const name = source.name.toLowerCase()
-      if (name.includes('luckperms') || name.includes('essentials') || name.includes('dynmap')) {
-        const hasPercent = source.totalPercent != null
-        const detail = hasPercent
-          ? `${source.name} 占比 ${source.totalPercent!.toFixed(1)}%，在报告中出现。需结合主线程方法栈证据才能判断是否为性能瓶颈。`
-          : `${source.name} 在来源列表中出现，但缺少占比数据，无法判断其开销权重。当前没有足够主线程堆栈证据，不能判断它是卡顿根因。`
+      if (name.includes('luckperms') || name.includes('essentials') || name.includes('dynmap') || name.includes('ftb')) {
+        const hasPercent = source.totalPercent != null && source.totalPercent > 0
+        const hasThreadEvidence = source.evidence && source.evidence.length > 0
+          && source.evidence.some((e: string) => e.includes('主线程'))
 
-        evidence.push({
-          title: `来源线索：${source.name}`,
-          detail,
-          confidence: 'low',
-        })
+        if (hasPercent && hasThreadEvidence) {
+          // Source has method-level evidence on main thread → medium/high
+          const conf = source.totalPercent! >= 15 ? 'high' : source.totalPercent! >= 5 ? 'medium' : 'low'
+          evidence.push({
+            title: `疑似性能瓶颈：${source.name}`,
+            detail: hasPercent && source.totalPercent != null
+              ? `${source.name} 在主线程方法中累计占比 ${source.totalPercent!.toFixed(1)}%，${source.evidence?.[0] || ''}`
+              : `${source.name} 在主线程方法中出现，但占比数据不完整`,
+            confidence: conf,
+            type: 'suspected_cause',
+            canBeRootCause: conf !== 'low',
+          })
+        } else if (hasPercent && !hasThreadEvidence) {
+          // Has percent but no main thread evidence → still low confidence
+          evidence.push({
+            title: `来源线索：${source.name}`,
+            detail: `${source.name} 累计占比 ${source.totalPercent!.toFixed(1)}%，但未确认是否出现在主线程关键方法中。缺少主线程方法栈证据，不能直接认定为性能瓶颈。`,
+            confidence: 'low',
+            type: 'source_hint',
+            canBeRootCause: false,
+          })
+        } else {
+          // No percent, no thread evidence → just a name in the mod list
+          const detail = `${source.name} 在来源列表中出现，但缺少占比数据和主线程方法栈证据。\n仅凭来源名称无法判断其真实性能开销。该来源可能是正常运行的模组，也可能是卡顿相关方，但当前采样数据不足以做出判断。`
+          evidence.push({
+            title: `低置信来源线索：${source.name}`,
+            detail,
+            confidence: 'low',
+            type: 'source_hint',
+            canBeRootCause: false,
+          })
+        }
       }
     }
   }

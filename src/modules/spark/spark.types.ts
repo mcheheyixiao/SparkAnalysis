@@ -116,6 +116,8 @@ export interface RuleEvidence {
   title: string
   detail: string
   confidence: 'high' | 'medium' | 'low'
+  type?: 'health_issue' | 'source_hint' | 'system_metric' | 'suspected_cause'
+  canBeRootCause?: boolean
 }
 
 export interface SuspectedCause {
