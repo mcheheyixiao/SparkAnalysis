@@ -15,6 +15,7 @@ export class SparkNormalizer {
 
     // ---- Server info ----
     const server = this.extractServerInfo(raw, rawData)
+    this.detectedPlatform = server.platform
 
     // ---- Timing ----
     const timing = {
@@ -93,6 +94,11 @@ export class SparkNormalizer {
         min: this.toNumber(tpsObj?.min),
         max: this.toNumber(tpsObj?.max),
       }
+      // If mean is missing but latest is present, use latest as mean estimate
+      // so downstream rule analysis can still detect TPS issues.
+      if (tps.mean == null && tps.latest != null) {
+        tps.mean = tps.latest
+      }
       if (tps.latest != null || tps.mean != null) {
         health.tps = tps
         hasAnyHealthData = true
@@ -103,17 +109,51 @@ export class SparkNormalizer {
     }
 
     // --- MSPT ---
-    const msptObj = this.findFirstDeep<any>(raw, ['mspt'])
+    let msptObj = this.findFirstDeep<any>(raw, ['mspt'])
       || this.findFirstDeep<any>(full, ['mspt'])
       || raw?.health?.mspt || raw?.mspt || full?.mspt || full?.health?.mspt
       || this.pickFirst<any>(raw, ['tick.mspt', 'ticks.mspt', 'data.mspt'])
 
-    if (msptObj && typeof msptObj === 'object') {
+    // If the found msptObj doesn't have useful numeric fields, try timeWindowStatistics
+    const msptObjHasFields = msptObj && typeof msptObj === 'object'
+      && (this.toNumber(msptObj?.mean) != null || this.toNumber(msptObj?.median) != null
+          || this.toNumber(msptObj?.max) != null || this.toNumber(msptObj?.p95) != null)
+
+    if (!msptObjHasFields) {
+      const tws = full?.timeWindowStatistics
+      if (tws && typeof tws === 'object') {
+        const windows = Object.values(tws) as any[]
+        if (windows.length > 0) {
+          const msptMedians: number[] = []
+          const msptMaxes: number[] = []
+          for (const w of windows) {
+            if (typeof w?.msptMedian === 'number') msptMedians.push(w.msptMedian)
+            if (typeof w?.msptMax === 'number') msptMaxes.push(w.msptMax)
+          }
+          if (msptMedians.length > 0 || msptMaxes.length > 0) {
+            const medianVal = msptMedians.length > 0 ? this.avg(msptMedians) : undefined
+            health.mspt = {
+              mean: medianVal, // propagate to mean so rule analyzer can use it
+              median: medianVal,
+              max: msptMaxes.length > 0 ? Math.max(...msptMaxes) : undefined,
+            }
+            hasAnyHealthData = true
+            msptObj = null // mark as processed so we skip the block below
+          }
+        }
+      }
+    }
+
+    if (msptObj && typeof msptObj === 'object' && msptObjHasFields !== false) {
       const mspt = {
         mean: this.toNumber(msptObj?.mean) ?? this.toNumber(msptObj?.avg) ?? this.toNumber(msptObj?.average),
         median: this.toNumber(msptObj?.median) ?? this.toNumber(msptObj?.p50),
         p95: this.toNumber(msptObj?.p95) ?? this.toNumber(msptObj?.['95th']),
         max: this.toNumber(msptObj?.max),
+      }
+      // If mean is missing but median is present, use median as mean estimate
+      if (mspt.mean == null && mspt.median != null) {
+        mspt.mean = mspt.median
       }
       if (mspt.mean != null || mspt.median != null) {
         health.mspt = mspt
@@ -179,6 +219,11 @@ export class SparkNormalizer {
     if (!hasAnyHealthData && reportType === 'health') {
       limitations.push('未从 raw/full 数据中提取到 TPS/MSPT/CPU/Memory/GC 健康数据')
       hints.push('health report detected but no health metrics extracted')
+    }
+
+    // Add limitation if only sampler summary is available (no full profiler)
+    if (reportType === 'sampler' && !hasAnyHealthData) {
+      limitations.push('仅有 sampler 摘要数据，缺少 health 报告中的 TPS/MSPT 指标')
     }
 
     return health
@@ -275,6 +320,23 @@ export class SparkNormalizer {
       hints.push('threads extracted but no source breakdown available')
     }
 
+    // Report source percentage limitations
+    const sourcesWithPercent = sources.filter(s => s.totalPercent != null)
+    if (sources.length > 0 && sourcesWithPercent.length === 0) {
+      limitations.push('来源列表已提取，但所有来源均缺少占比数据，无法判断各来源的真实开销权重')
+    }
+
+    // Report thread method detail limitations
+    const threadsWithMethods = threads.filter(t => t.topMethods && t.topMethods.length > 0)
+    if (threads.length > 0 && threadsWithMethods.length === 0) {
+      limitations.push('线程数据未包含方法级调用栈，无法定位具体热点方法')
+    }
+
+    // If sources exist but none are on main thread, note it
+    if (sources.length > 0 && sourcesWithPercent.length === 0) {
+      limitations.push('缺少完整 profiler 调用树数据，建议使用 /spark profiler --timeout 120 重新采集以获取方法级热点和精确占比')
+    }
+
     return { threads, sources, suspiciousMethods }
   }
 
@@ -353,6 +415,14 @@ export class SparkNormalizer {
   }
 
   /**
+   * Calculate arithmetic mean of a number array.
+   */
+  private avg(values: number[]): number {
+    if (values.length === 0) return 0
+    return values.reduce((a, b) => a + b, 0) / values.length
+  }
+
+  /**
    * Convert bytes to MB. If value is already in MB range (< ~30), return as-is.
    * If value looks like bytes (> 1,000,000), convert to MB.
    */
@@ -428,6 +498,9 @@ export class SparkNormalizer {
     return 'unknown'
   }
 
+  // Cache the platform type for source classification context
+  private detectedPlatform: string | undefined
+
   private classifySourceType(name: string): NormalizedSource['type'] {
     const lower = name.toLowerCase()
     // Mod loaders must be checked BEFORE vanilla Minecraft to avoid
@@ -441,6 +514,15 @@ export class SparkNormalizer {
     // Heuristic: if it has a domain-like package structure, likely a plugin or mod
     if (name.includes('.') && !lower.startsWith('java'))
       return 'plugin'
+
+    // For Forge/Fabric/NeoForge platforms, simple-named sources are most likely mods.
+    // Plugins (Bukkit/Spigot/Paper) typically have package-structured names like "com.example.MyPlugin".
+    const platform = (this.detectedPlatform || '').toLowerCase()
+    const isModded = ['forge', 'fabric', 'neoforge', 'quilt'].some(p => platform.includes(p))
+    if (isModded && name.length > 0) {
+      return 'mod'
+    }
+
     return 'unknown'
   }
 }

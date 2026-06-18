@@ -38,8 +38,9 @@
 ## 功能特性
 
 - **Spark 报告抓取** — 支持 `https://spark.lucko.me/{code}` 链接，自动识别 sampler / heap / health 报告类型
-- **AI 智能诊断** — 调用 DeepSeek API 生成中文性能诊断报告，包含严重程度、证据链、疑似原因、修复方案、复测命令
-- **规则预分析** — AI 分析前先进行 TPS/MSPT/线程/GC/关键词规则预分析，提升诊断质量
+- **AI 智能诊断** — 调用 DeepSeek API 生成中文性能诊断报告，包含严重程度、证据链、疑似原因、修复方案、复测命令。AI 接收结构化摘要而非原始 JSON，避免 token 爆炸和误判。
+- **规则预分析** — AI 分析前先进行 TPS/MSPT/线程/GC/关键词规则预分析，区分"高/中/低置信度"证据和"来源线索"vs"疑似根因"，提升诊断准确性。
+- **来源线索分级** — 仅在 source list 中出现而无主线程方法栈证据的来源标记为"低置信度来源线索"，不会误判为根因。
 - **小白友好** — 输出包含通俗易懂的 "小白解释"，专业术语翻译为日常比喻
 - **异步分析** — 提交后立即返回 reportId，后台任务异步执行，前端轮询获取结果
 - **结果复用** — 同一 spark 链接在可配置 TTL 内返回已缓存结果，避免重复分析
@@ -258,25 +259,26 @@ Body: { "url": "https://spark.lucko.me/7twWCWSV0B" }
     "status": "completed",
     "severity": "medium",
     "summary": "服务器主线程 CPU 占用偏高，疑似区块加载和实体 AI 导致",
-    "markdownReport": "# 总结\n主线程被区块加载和实体 AI 拖累...\n\n## 小白解释\n...",
+    "markdownReport": "# 总结\nTPS：13.9 → 明显卡顿\n\n## 小白解释\n...",
     "isFallback": false,
-    "normalizedSummary": { /* 结构化摘要 */ },
-    "ruleAnalysis": { /* 规则预分析结果 */ },
+    "normalizedSummary": { /* 结构化摘要（含 health/tps/mspt/threads/sources/limitations） */ },
+    "ruleAnalysis": { /* 规则预分析结果（含来源线索分级、疑似根因、限制说明） */ },
     "aiResult": {
-      "one_sentence_summary": "主线程被区块加载和实体 AI 拖累...",
-      "severity": "medium",
+      "one_sentence_summary": "TPS 仅 13.9 且 MSPT 高达 66.6ms，服务器存在明显性能瓶颈",
+      "severity": "high",
       "beginner_explanation": "你的服务器像一个人同时做太多事情...",
       "key_evidence": [
-        { "title": "主线程 CPU 占比 78%", "explanation": "...", "confidence": "high" }
+        { "title": "TPS 偏低", "explanation": "TPS 13.9 < 目标 20", "confidence": "high" },
+        { "title": "MSPT 过高", "explanation": "MSPT 66.6ms > 阈值 50ms", "confidence": "high" }
       ],
       "suspected_causes": [
-        { "rank": 1, "name": "区块加载频繁", "category": "world", "reason": "...", "confidence": "high", "how_to_verify": "查看 /debug chunks" }
+        { "rank": 1, "name": "主线程 Tick 计算过载", "category": "world", "reason": "...", "confidence": "high", "how_to_verify": "使用 /spark profiler 采集完整调用树" }
       ],
       "fix_plan": [
-        { "priority": 1, "action": "降低 view-distance 到 6", "difficulty": "easy", "risk": "low", "expected_effect": "减少 30% 区块加载" }
+        { "priority": 1, "action": "运行 /spark profiler --timeout 120 获取方法级热点", "difficulty": "easy", "risk": "low", "expected_effect": "精确定位根因" }
       ],
-      "retest_commands": ["/spark profiler start --timeout 300"],
-      "missing_information": ["缺少完整调用树数据，建议使用 --full 参数重新采样"],
+      "retest_commands": ["/spark profiler --timeout 120"],
+      "missing_information": ["缺少完整 profiler 调用树数据，无法定位具体方法级热点"],
       "markdown_report": "# 性能诊断报告\n..."
     },
     "createdAt": "2026-06-17T12:00:00.000Z",

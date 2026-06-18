@@ -90,6 +90,7 @@
 8. 如果缺少主线程堆栈，不能断言具体插件导致主线程卡顿。
 9. 如果缺少 GC 数据，不能断言一定是 GC 问题。
 10. 如果证据不足，confidence 必须为 low 或 medium，不能为 high。
+11. 低置信度（low confidence）的来源线索（如仅在 source list 中出现、没有主线程方法栈证据和明确占比的插件/模组名）不能放入 suspected_causes，只能放入 key_evidence 或 missing_information。
 
 ---
 

@@ -56,10 +56,13 @@ export class SparkRuleAnalyzer {
     const tps = data.health.tps
     if (!tps) return
 
-    if (tps.mean != null && tps.mean < 19.5) {
+    // Check mean first; if not available, fall back to latest
+    const effectiveTps = tps.mean ?? tps.latest
+
+    if (effectiveTps != null && effectiveTps < 19.5) {
       evidence.push({
         title: 'TPS 偏低',
-        detail: `平均 TPS 为 ${tps.mean.toFixed(1)}（目标 20），服务器存在性能问题`,
+        detail: `TPS 为 ${effectiveTps.toFixed(1)}（目标 20），服务器存在性能问题`,
         confidence: 'high',
       })
     }
@@ -94,31 +97,34 @@ export class SparkRuleAnalyzer {
     const mspt = data.health.mspt
     if (!mspt) return
 
-    if (mspt.mean != null) {
-      if (mspt.mean >= 50) {
+    // Use mean, or fall back to median
+    const effectiveMean = mspt.mean ?? mspt.median
+
+    if (effectiveMean != null) {
+      if (effectiveMean >= 50) {
         evidence.push({
           title: 'MSPT 过高 — 明显卡顿风险',
-          detail: `平均 MSPT ${mspt.mean.toFixed(1)}ms（阈值 50ms），服务器每 tick 计算时间严重超出预算`,
+          detail: `MSPT ${effectiveMean.toFixed(1)}ms（阈值 50ms），服务器每 tick 计算时间严重超出预算`,
           confidence: 'high',
         })
-      } else if (mspt.mean >= 40) {
+      } else if (effectiveMean >= 40) {
         evidence.push({
           title: 'MSPT 接近压力边界',
-          detail: `平均 MSPT ${mspt.mean.toFixed(1)}ms，接近 50ms 上限，高负载时可能卡顿`,
+          detail: `MSPT ${effectiveMean.toFixed(1)}ms，接近 50ms 上限，高负载时可能卡顿`,
           confidence: 'medium',
         })
       }
     }
 
-    if (mspt.max != null && mspt.mean != null && mspt.max > mspt.mean * 1.5) {
+    if (mspt.max != null && effectiveMean != null && mspt.max > effectiveMean * 1.5) {
       evidence.push({
         title: '偶发 MSPT 峰值',
-        detail: `最大 MSPT ${mspt.max.toFixed(1)}ms 明显高于平均 ${mspt.mean.toFixed(1)}ms，存在偶发卡顿`,
+        detail: `最大 MSPT ${mspt.max.toFixed(1)}ms 明显高于平均 ${effectiveMean.toFixed(1)}ms，存在偶发卡顿`,
         confidence: 'medium',
       })
     }
 
-    if (mspt.mean != null && mspt.mean >= 45) {
+    if (effectiveMean != null && effectiveMean >= 45) {
       commands.push('/spark profiler --timeout 120')
     }
   }
@@ -247,13 +253,21 @@ export class SparkRuleAnalyzer {
       }
     }
 
-    // Scan source names
+    // Scan source names for known patterns
+    // NOTE: These are LOW-confidence clues ONLY. Source names alone (without
+    // main-thread method evidence and percentage data) do NOT constitute
+    // sufficient evidence to blame a specific mod/plugin.
     for (const source of data.profiler.sources) {
       const name = source.name.toLowerCase()
       if (name.includes('luckperms') || name.includes('essentials') || name.includes('dynmap')) {
+        const hasPercent = source.totalPercent != null
+        const detail = hasPercent
+          ? `${source.name} 占比 ${source.totalPercent!.toFixed(1)}%，在报告中出现。需结合主线程方法栈证据才能判断是否为性能瓶颈。`
+          : `${source.name} 在来源列表中出现，但缺少占比数据，无法判断其开销权重。当前没有足够主线程堆栈证据，不能判断它是卡顿根因。`
+
         evidence.push({
-          title: `检测到来源: ${source.name}`,
-          detail: `${source.name} 总占比 ${source.totalPercent?.toFixed(1) ?? '?'}%，可能是性能因素之一（不一定是主要问题）`,
+          title: `来源线索：${source.name}`,
+          detail,
           confidence: 'low',
         })
       }
@@ -302,11 +316,20 @@ export class SparkRuleAnalyzer {
   ): string {
     if (insufficientData) return '报告数据解析不足，无法确认是否存在性能问题'
     if (evidence.length === 0) return '未检测到明显性能问题'
-    const top = evidence.filter(e => e.confidence === 'high').slice(0, 3)
-    if (top.length > 0) {
-      return top.map(e => e.title).join('；')
+
+    // Prioritize high-confidence evidence for the summary
+    const high = evidence.filter(e => e.confidence === 'high').slice(0, 3)
+    if (high.length > 0) {
+      return high.map(e => e.title).join('；')
     }
-    return evidence.slice(0, 2).map(e => e.title).join('；')
+
+    const medium = evidence.filter(e => e.confidence === 'medium').slice(0, 2)
+    if (medium.length > 0) {
+      return medium.map(e => e.title).join('；')
+    }
+
+    // For low-confidence-only evidence, make it clear these are clues, not conclusions
+    return '发现若干低置信度线索，建议采集更详细的 profiler 数据进一步分析'
   }
 }
 

@@ -1,0 +1,66 @@
+{
+  "_description": "Normalized summary fixture from real spark report kPy1L2N05S (Forge 1.19.2, TPS 13.95). Stripped to key fields for testing.",
+  "code": "kPy1L2N05S",
+  "reportType": "sampler",
+  "server": {
+    "platform": "Forge",
+    "minecraftVersion": "1.19.2",
+    "sparkVersion": "2",
+    "serverBrand": ""
+  },
+  "timing": {},
+  "health": {
+    "tps": {
+      "latest": 13.949660609714726,
+      "mean": 13.949660609714726
+    },
+    "mspt": {
+      "mean": 66.5867405,
+      "median": 66.5867405,
+      "max": 295.98794
+    },
+    "gc": {}
+  },
+  "profiler": {
+    "threads": [
+      {
+        "name": "Server thread",
+        "type": "main",
+        "topMethods": [
+          { "name": "native", "source": null },
+          { "name": "libc.so.6", "source": null },
+          { "name": "net.minecraft.Util", "source": null },
+          { "name": "java.lang.invoke.DirectMethodHandle$Holder", "source": null },
+          { "name": "java.lang.invoke.Invokers$Holder", "source": null }
+        ]
+      }
+    ],
+    "sources": [
+      { "name": "hexerei", "type": "mod" },
+      { "name": "isscustom", "type": "mod" },
+      { "name": "transmog", "type": "mod" },
+      { "name": "ftbessentials", "type": "mod" },
+      { "name": "openpartiesandclaims", "type": "mod" },
+      { "name": "playeranimator", "type": "mod" },
+      { "name": "morejs", "type": "mod" },
+      { "name": "prefab", "type": "mod" },
+      { "name": "incontrol", "type": "mod" },
+      { "name": "sophisticatedcore", "type": "mod" },
+      { "name": "nanhealthfixer", "type": "mod" },
+      { "name": "keybindjs", "type": "mod" },
+      { "name": "chestcavityjs", "type": "mod" },
+      { "name": "xaeroworldmap", "type": "mod" },
+      { "name": "goety", "type": "mod" },
+      { "name": "placebo", "type": "mod" },
+      { "name": "citadel", "type": "mod" },
+      { "name": "alexsmobs", "type": "mod" },
+      { "name": "modernfix", "type": "mod" },
+      { "name": "tetrajs", "type": "mod" }
+    ],
+    "suspiciousMethods": []
+  },
+  "limitations": [
+    "来源列表已提取，但所有来源均缺少占比数据，无法判断各来源的真实开销权重",
+    "缺少完整 profiler 调用树数据，建议使用 /spark profiler --timeout 120 重新采集以获取方法级热点和精确占比"
+  ]
+}

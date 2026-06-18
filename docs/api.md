@@ -1108,3 +1108,7 @@
 | 2025-06 | PUT /api/admin/settings/system 改为 `{ settings: {...} }` 格式 |
 | 2025-06 | POST /api/public/analyze 增加业务限流 |
 | 2025-06 | AI 运行时配置字段从 `apiKeyEncrypted` 改为 `apiKey`（仅内部） |
+| 2026-06 | 修复真实 spark 报告分析准确性：normalizer 增强 TPS/MSPT/来源提取，来源类型正确分类（Forge mods），TPS/MSPT 缺失字段补齐 |
+| 2026-06 | 来源线索改为置信度分级：低置信度来源线索不进入 suspected_causes，需主线程方法栈证据才能判定根因 |
+| 2026-06 | markdownReport 防御增强：所有返回的 markdownReport 不包含原始 AI JSON；AI JSON 解析失败时生成干净中文兜底报告 |
+| 2026-06 | Prompt 模板增加低置信度反误判规则 |

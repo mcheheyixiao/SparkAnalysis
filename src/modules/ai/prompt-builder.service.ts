@@ -87,6 +87,12 @@ export class PromptBuilder {
 数据限制：{{limitations}}
 后端解析调试信息：{{debugInfo}}
 
+重要提醒：
+- 低置信度（low confidence）的来源线索不能作为主要 suspected_causes。
+- 如果某来源只出现在 source list 或规则预分析中，而没有主线程方法栈证据，只能写入 key_evidence 或 missing_information，不能作为根因。
+- 来源名称本身（如 ftbessentials、luckperms）不能作为判定依据，必须结合主线程占比和方法栈。
+- 如果数据不足以定位具体根因（如缺少 profiler 调用树、缺少方法级占比），必须在 missing_information 中明确说明。
+
 请生成中文诊断报告，输出严格 JSON 格式。`
   }
 

@@ -1,10 +1,40 @@
 import type { AiAnalysisOutput } from '../ai/ai.types.js'
 import type { RuleAnalysisResult } from '../spark/spark.types.js'
 
+// ── Unified display markdown builder ─────────────────────────────
+
+export function buildDisplayMarkdownReport(input: {
+  aiResult?: AiAnalysisOutput | null
+  fallbackResult?: AiAnalysisOutput | null
+  normalizedSummary?: unknown
+  ruleAnalysis?: RuleAnalysisResult | null
+  summary?: string | null
+  severity?: string | null
+}): string {
+  // 1. If we have a valid aiResult, build from it
+  if (input.aiResult?.one_sentence_summary) {
+    return buildMarkdownReportFromAiResult(input.aiResult)
+  }
+
+  // 2. If we have a fallbackResult, use it
+  if (input.fallbackResult?.one_sentence_summary) {
+    return buildMarkdownReportFromAiResult(input.fallbackResult)
+  }
+
+  // 3. Fallback to rule analysis
+  return buildFallbackMarkdownReport({
+    summary: input.summary || '报告内容暂不可用',
+    severity: input.severity || 'normal',
+    ruleAnalysis: input.ruleAnalysis || undefined,
+    reason: 'AI_INVALID_JSON',
+  })
+}
+
 // ── Helpers ──────────────────────────────────────────────────────
 
-function looksLikeJsonText(text: string): boolean {
-  const trimmed = text.trim()
+export function looksLikeJsonText(value: unknown): boolean {
+  if (typeof value !== 'string') return false
+  const trimmed = value.trim()
   return trimmed.startsWith('{') || trimmed.startsWith('[')
 }
 
