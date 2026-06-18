@@ -1,6 +1,6 @@
 <template>
   <public-layout>
-    <div class="report-page container">
+    <div ref="topRef" class="report-page container">
       <!-- Error state -->
       <template v-if="report.status === 'failed'">
         <n-card class="report-error-card" :bordered="true">
@@ -37,7 +37,7 @@
       <!-- Completed -->
       <template v-else>
         <!-- Top bar -->
-        <div class="report-topbar">
+        <div class="report-topbar reveal-item">
           <n-button text @click="$router.push('/')">
             <template #icon>
               <n-icon>
@@ -58,7 +58,7 @@
         </div>
 
         <!-- Summary card -->
-        <n-card class="report-summary-card" :bordered="true">
+        <n-card class="report-summary-card reveal-item" :bordered="true">
           <div class="summary-header">
             <h2 class="summary-title">分析摘要</h2>
             <n-text depth="3" v-if="report.completedAt">
@@ -82,13 +82,14 @@
         </n-card>
 
         <!-- AI Result -->
+        <div ref="sectionRef">
         <template v-if="aiResult">
-          <n-card class="report-section-card" :bordered="true" title="核心证据">
+          <n-card class="report-section-card reveal-section" :bordered="true" title="核心证据">
             <evidence-list :evidence="aiResult.key_evidence || []" />
           </n-card>
 
           <n-card
-            class="report-section-card"
+            class="report-section-card reveal-section"
             :bordered="true"
             title="疑似原因"
             v-if="aiResult.suspected_causes?.length"
@@ -113,7 +114,7 @@
           </n-card>
 
           <n-card
-            class="report-section-card"
+            class="report-section-card reveal-section"
             :bordered="true"
             title="修复建议"
             v-if="aiResult.fix_plan?.length"
@@ -137,7 +138,7 @@
 
           <!-- Beginner explanation -->
           <n-card
-            class="report-section-card"
+            class="report-section-card reveal-section"
             :bordered="true"
             title="小白解释"
             v-if="aiResult.beginner_explanation"
@@ -149,7 +150,7 @@
 
           <!-- Retest commands -->
           <n-card
-            class="report-section-card"
+            class="report-section-card reveal-section"
             :bordered="true"
             title="复测命令"
             v-if="aiResult.retest_commands?.length"
@@ -159,7 +160,7 @@
 
           <!-- Missing information -->
           <n-card
-            class="report-section-card"
+            class="report-section-card reveal-section"
             :bordered="true"
             title="缺少的信息"
             v-if="aiResult.missing_information?.length"
@@ -180,9 +181,10 @@
         />
 
         <!-- Markdown report -->
-        <n-card class="report-section-card" :bordered="true" title="完整诊断报告" v-if="report.aiResult?.markdown_report">
+        <n-card class="report-section-card reveal-section" :bordered="true" title="完整诊断报告" v-if="report.aiResult?.markdown_report">
           <markdown-report :content="report.aiResult.markdown_report" />
         </n-card>
+        </div>
 
         <!-- Actions -->
         <div class="report-actions" v-if="report.status === 'completed'">
@@ -203,7 +205,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
 import { getPublicReport } from '@/api/public-api'
@@ -215,10 +217,25 @@ import MetricCard from '@/components/public/MetricCard.vue'
 import EvidenceList from '@/components/public/EvidenceList.vue'
 import MarkdownReport from '@/components/public/MarkdownReport.vue'
 import ErrorState from '@/components/common/ErrorState.vue'
+import { gsap, ScrollTrigger } from '@/plugins/gsap'
+import { useRevealAnimation } from '@/composables/useRevealAnimation'
+
+function getPrefersReducedMotion(): boolean {
+  if (typeof window === 'undefined') return false
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
 
 const route = useRoute()
 const router = useRouter()
 const message = useMessage()
+
+const topRef = ref<HTMLElement | null>(null)
+
+useRevealAnimation(topRef, {
+  selector: '.reveal-item',
+  stagger: 0.06,
+  autoPlay: true,
+})
 const reportId = route.params.reportId as string
 
 const report = ref<PublicReport>({ reportId, status: 'processing' })
@@ -237,12 +254,65 @@ const flatMetrics = computed(() => {
   return flat
 })
 
+// ---- Scroll-triggered section reveals ----
+
+const sectionRef = ref<HTMLElement | null>(null)
+const prefersReduced = getPrefersReducedMotion()
+let scrollCtx: gsap.Context | null = null
+const dataReady = computed(() => !!aiResult.value)
+
+function initScrollReveal() {
+  if (!sectionRef.value) return
+
+  const sections = gsap.utils.toArray<HTMLElement>(
+    '.reveal-section',
+    sectionRef.value
+  )
+
+  // CRITICAL: reduced-motion must make sections visible, not leave them hidden
+  if (prefersReduced) {
+    gsap.set(sections, { opacity: 1, y: 0 })
+    return
+  }
+
+  scrollCtx?.revert()
+
+  const targets = sections
+
+  scrollCtx = gsap.context(() => {
+    targets.forEach((section) => {
+      gsap.to(section, {
+        opacity: 1,
+        y: 0,
+        duration: 0.6,
+        ease: 'power2.out',
+        scrollTrigger: {
+          trigger: section,
+          start: 'top 85%',
+          toggleActions: 'play none none none',
+        },
+      })
+    })
+  }, sectionRef.value)
+}
+
+function refreshTriggers() {
+  ScrollTrigger.refresh()
+}
+
 async function loadReport() {
   try {
     const data = await getPublicReport(reportId)
     report.value = data
     if (data.status === 'processing' || data.status === 'pending') {
       router.replace({ name: 'analyze', params: { reportId } })
+    }
+
+    // After data loads and DOM updates, init scroll reveals
+    await nextTick()
+    if (!prefersReduced && dataReady.value) {
+      initScrollReveal()
+      refreshTriggers()
     }
   } catch {
     message.error('加载报告失败')
@@ -260,6 +330,10 @@ function copyReport() {
 }
 
 onMounted(loadReport)
+
+onBeforeUnmount(() => {
+  scrollCtx?.revert()
+})
 </script>
 
 <style scoped>
