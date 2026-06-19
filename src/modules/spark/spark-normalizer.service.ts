@@ -1,4 +1,4 @@
-import type { SparkRawData, NormalizedSummary, NormalizedThread, NormalizedSource, NormalizedGcSummary, NormalizedGcCollector } from './spark.types.js'
+import type { SparkRawData, NormalizedSummary, NormalizedThread, NormalizedSource, NormalizedGcSummary, NormalizedGcCollector, NormalizedEntityDistributionSummary, NormalizedEntityTypeStat, NormalizedWorldEntitySummary, NormalizedHotEntityChunk } from './spark.types.js'
 
 interface SourceIndex {
   classSources: Map<string, string>
@@ -299,6 +299,13 @@ export class SparkNormalizer {
       health.worldEntities = worldEntities
     }
 
+    // --- Entity distribution (P7) ---
+    const entityDistribution = this.extractEntityDistribution(raw, full, limitations, hints)
+    if (entityDistribution) {
+      health.entityDistribution = entityDistribution
+      hasAnyHealthData = true
+    }
+
     if (!hasAnyHealthData && reportType === 'health') {
       limitations.push('未从 raw/full 数据中提取到 TPS/MSPT/CPU/Memory/GC 健康数据')
       hints.push('health report detected but no health metrics extracted')
@@ -523,6 +530,357 @@ export class SparkNormalizer {
       if (n != null) return n
     }
     return undefined
+  }
+
+  // ========== Entity distribution extraction (P7) ==========
+
+  /**
+   * Extract entity type distribution summary from spark metadata.
+   * Priority source: raw.metadata.platformStatistics.world
+   */
+  private extractEntityDistribution(
+    raw: any,
+    full: any,
+    limitations: string[],
+    _hints: string[],
+  ): NormalizedEntityDistributionSummary | undefined {
+    // 1. Find the world object from priority-ordered data sources
+    const worldObj = this.pickFirst<any>(raw, [
+      'metadata.platformStatistics.world',
+      'metadata.metadata.platformStatistics.world',
+      'platformStatistics.world',
+    ]) ?? this.pickFirst<any>(full, [
+      'metadata.platformStatistics.world',
+      'platformStatistics.world',
+    ])
+
+    if (!worldObj || typeof worldObj !== 'object') {
+      // Try fallback paths
+      const fallbackWorld = raw?.world ?? full?.world
+      if (fallbackWorld && typeof fallbackWorld === 'object') {
+        return this.buildEntityDistribution(fallbackWorld, raw, full, limitations)
+      }
+      return undefined
+    }
+
+    return this.buildEntityDistribution(worldObj, raw, full, limitations)
+  }
+
+  private buildEntityDistribution(
+    worldObj: any,
+    raw: any,
+    full: any,
+    limitations: string[],
+  ): NormalizedEntityDistributionSummary | undefined {
+    const distLimitations: string[] = []
+    const globalRiskFlags: string[] = []
+
+    // --- Total entities ---
+    const totalEntities = this.toFiniteNumber(worldObj?.totalEntities)
+      ?? this.toFiniteNumber(worldObj?.entities)
+      ?? this.toFiniteNumber(worldObj?.total)
+
+    if (totalEntities == null) return undefined
+
+    // --- Global entity counts ---
+    const globalEntityCounts = worldObj?.entityCounts
+    if (!globalEntityCounts || typeof globalEntityCounts !== 'object') {
+      distLimitations.push(
+        '检测到世界实体总数，但 spark raw/full 数据中未找到可解析的实体类型分布，无法判断具体是哪类实体造成压力。'
+      )
+      return {
+        totalEntities,
+        worlds: [],
+        globalTopTypes: [],
+        riskFlags: [],
+        limitations: distLimitations,
+      }
+    }
+
+    // Parse global entity type stats
+    const allGlobalStats = this.parseGlobalEntityStats(globalEntityCounts, totalEntities)
+    const totalTypes = allGlobalStats.length
+    const globalTopTypes = allGlobalStats.slice(0, 15)
+
+    // Collect risk flags from global top types
+    for (const stat of allGlobalStats) {
+      if (stat.riskLevel === 'high' || stat.riskLevel === 'medium') {
+        if (!globalRiskFlags.includes(stat.type)) {
+          globalRiskFlags.push(stat.type)
+        }
+      }
+    }
+
+    // Total entities risk flag
+    if (totalEntities >= 10000) {
+      globalRiskFlags.push('实体总数过高(≥10000)')
+    } else if (totalEntities >= 5000) {
+      globalRiskFlags.push('实体总数偏高(≥5000)')
+    } else if (totalEntities >= 1000) {
+      globalRiskFlags.push('实体总数超过1000，需观察')
+    }
+
+    // Summary limitation if we truncated types
+    if (allGlobalStats.length > 15) {
+      distLimitations.push(
+        '实体类型数量较多，已仅保留 TopN 类型，其余合并为 otherEntitiesTotal，避免向 AI 传递过大的实体清单。'
+      )
+    }
+
+    // --- Parse worlds ---
+    const worlds: NormalizedWorldEntitySummary[] = []
+    const allChunks: NormalizedHotEntityChunk[] = []
+    const rawWorlds = worldObj?.worlds
+    if (Array.isArray(rawWorlds)) {
+      for (const w of rawWorlds) {
+        if (!w || typeof w !== 'object') continue
+        const worldSummary = this.parseWorldSummary(w, totalEntities)
+        if (worldSummary) {
+          worlds.push(worldSummary)
+        }
+        // Collect chunks for hotChunks
+        if (Array.isArray(w?.regions)) {
+          for (const region of w.regions) {
+            if (!region || !Array.isArray(region?.chunks)) continue
+            for (const chunk of region.chunks) {
+              if (!chunk || typeof chunk !== 'object') continue
+              const chunkX = this.toFiniteNumber(chunk?.x)
+              const chunkZ = this.toFiniteNumber(chunk?.z)
+              const chunkTotal = this.toFiniteNumber(chunk?.totalEntities)
+              if (chunkX == null || chunkZ == null || chunkTotal == null) continue
+
+              const chunkEntityCounts = chunk?.entityCounts
+              const chunkTopTypes: NormalizedEntityTypeStat[] = []
+              if (chunkEntityCounts && typeof chunkEntityCounts === 'object') {
+                const chunkStats = Object.entries(chunkEntityCounts as Record<string, unknown>)
+                  .filter(([key, val]) => {
+                    if (!key || typeof key !== 'string' || key === '[object Object]') return false
+                    const n = this.toFiniteNumber(val)
+                    return n != null && n > 0
+                  })
+                  .map(([key, val]) => ({
+                    type: key,
+                    count: this.toFiniteNumber(val)!,
+                    ratio: chunkTotal > 0 ? Math.round((this.toFiniteNumber(val)! / chunkTotal) * 10000) / 10000 : undefined,
+                  }))
+                  .sort((a, b) => b.count - a.count)
+                for (const stat of chunkStats.slice(0, 5)) {
+                  const risk = this.classifyEntityRisk(stat.type, stat.count)
+                  chunkTopTypes.push({ ...stat, ...risk })
+                }
+              }
+
+              const chunkRiskFlags: string[] = []
+              if (chunkTotal >= 50) chunkRiskFlags.push('高实体密度区块')
+              if (chunkTopTypes.some(t => t.riskLevel === 'high')) chunkRiskFlags.push('含高风险实体类型')
+
+              allChunks.push({
+                world: w?.name || 'unknown',
+                chunkX,
+                chunkZ,
+                approxBlockX: chunkX * 16,
+                approxBlockZ: chunkZ * 16,
+                totalEntities: chunkTotal,
+                topTypes: chunkTopTypes,
+                riskFlags: chunkRiskFlags.length > 0 ? chunkRiskFlags : undefined,
+              })
+            }
+          }
+        }
+      }
+    }
+
+    // Sort chunks by totalEntities descending and take top 10
+    allChunks.sort((a, b) => b.totalEntities - a.totalEntities)
+    const hotChunks = allChunks.slice(0, 10)
+
+    if (hotChunks.length > 0) {
+      distLimitations.push(
+        '已提取高实体区块摘要，但该数据只表示区块实体数量，不包含玩家行为、精确实体坐标或机器位置。'
+      )
+    }
+
+    return {
+      totalEntities,
+      totalTypes,
+      worlds,
+      globalTopTypes,
+      hotChunks: hotChunks.length > 0 ? hotChunks : undefined,
+      riskFlags: globalRiskFlags,
+      limitations: distLimitations.length > 0 ? distLimitations : undefined,
+    }
+  }
+
+  /**
+   * Parse global entity type stats from entityCounts object.
+   * Returns sorted array with risk classification applied.
+   */
+  private parseGlobalEntityStats(
+    entityCounts: unknown,
+    totalEntities: number,
+  ): NormalizedEntityTypeStat[] {
+    if (!entityCounts || typeof entityCounts !== 'object') return []
+
+    const stats: NormalizedEntityTypeStat[] = []
+
+    for (const [key, val] of Object.entries(entityCounts as Record<string, unknown>)) {
+      // Skip invalid keys
+      if (!key || typeof key !== 'string' || key === '[object Object]') continue
+      const count = this.toFiniteNumber(val)
+      if (count == null || count <= 0) continue
+
+      const ratio = totalEntities > 0
+        ? Math.round((count / totalEntities) * 10000) / 10000
+        : undefined
+
+      const risk = this.classifyEntityRisk(key, count)
+      stats.push({
+        type: key,
+        count,
+        ratio,
+        ...risk,
+      })
+    }
+
+    // Sort by count descending
+    stats.sort((a, b) => b.count - a.count)
+    return stats
+  }
+
+  /**
+   * Parse a single world summary from spark world data.
+   */
+  private parseWorldSummary(
+    worldData: any,
+    _globalTotalEntities: number,
+  ): NormalizedWorldEntitySummary | undefined {
+    const worldName = worldData?.name
+    if (!worldName || typeof worldName !== 'string') return undefined
+
+    const worldTotal = this.toFiniteNumber(worldData?.totalEntities)
+    if (worldTotal == null) return undefined
+
+    // Get world-level entity counts
+    let worldEntityCounts: Record<string, number> | undefined
+    if (worldData?.entityCounts && typeof worldData.entityCounts === 'object') {
+      // Direct world-level entityCounts
+      worldEntityCounts = {}
+      for (const [key, val] of Object.entries(worldData.entityCounts as Record<string, unknown>)) {
+        if (!key || typeof key !== 'string' || key === '[object Object]') continue
+        const n = this.toFiniteNumber(val)
+        if (n != null && n > 0) worldEntityCounts[key] = n
+      }
+    } else {
+      // Aggregate from regions -> chunks -> entityCounts
+      worldEntityCounts = {}
+      if (Array.isArray(worldData?.regions)) {
+        for (const region of worldData.regions) {
+          if (!region || !Array.isArray(region?.chunks)) continue
+          for (const chunk of region.chunks) {
+            if (!chunk || typeof chunk?.entityCounts !== 'object') continue
+            for (const [key, val] of Object.entries(chunk.entityCounts as Record<string, unknown>)) {
+              if (!key || typeof key !== 'string' || key === '[object Object]') continue
+              const n = this.toFiniteNumber(val)
+              if (n != null && n > 0) {
+                worldEntityCounts[key] = (worldEntityCounts[key] || 0) + n
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Build top types
+    const worldStats: NormalizedEntityTypeStat[] = []
+    let aggregatedTotal = 0
+    for (const [key, count] of Object.entries(worldEntityCounts)) {
+      if (count <= 0) continue
+      aggregatedTotal += count
+      const ratio = worldTotal > 0 ? Math.round((count / worldTotal) * 10000) / 10000 : undefined
+      const risk = this.classifyEntityRisk(key, count)
+      worldStats.push({ type: key, count, ratio, ...risk })
+    }
+    worldStats.sort((a, b) => b.count - a.count)
+
+    const topTypes = worldStats.slice(0, 10)
+    const effectiveTotal = worldTotal > 0 ? worldTotal : aggregatedTotal
+    const topTypesTotal = topTypes.reduce((sum, t) => sum + t.count, 0)
+    const otherTypesCount = Math.max(0, worldStats.length - topTypes.length)
+    const otherEntitiesTotal = Math.max(0, effectiveTotal - topTypesTotal)
+
+    const worldRiskFlags: string[] = []
+    for (const stat of topTypes) {
+      if (stat.riskLevel === 'high' || stat.riskLevel === 'medium') {
+        if (!worldRiskFlags.includes(stat.type)) {
+          worldRiskFlags.push(stat.type)
+        }
+      }
+    }
+
+    return {
+      world: worldName,
+      totalEntities: effectiveTotal,
+      topTypes,
+      otherTypesCount: otherTypesCount > 0 ? otherTypesCount : undefined,
+      otherEntitiesTotal: otherEntitiesTotal > 0 ? otherEntitiesTotal : undefined,
+      riskFlags: worldRiskFlags.length > 0 ? worldRiskFlags : undefined,
+    }
+  }
+
+  /**
+   * Classify entity risk level based on type and count.
+   */
+  private classifyEntityRisk(type: string, count: number): {
+    riskLevel?: 'low' | 'medium' | 'high'
+    riskReason?: string
+  } {
+    const lower = type.toLowerCase()
+
+    // minecraft:item / item — dropped items/掉落物
+    if (lower === 'minecraft:item' || lower === 'item') {
+      if (count >= 1000) return { riskLevel: 'high', riskReason: '掉落物数量极高，可能造成实体 tick、合并、碰撞或清理压力；需结合 profiler 主线程热点确认。' }
+      if (count >= 250) return { riskLevel: 'medium', riskReason: '掉落物数量偏高，可能造成实体 tick、合并、碰撞或清理压力；需结合 profiler 主线程热点确认。' }
+      return {}
+    }
+
+    // experience_orb — 经验球
+    if (lower === 'minecraft:experience_orb' || lower === 'experience_orb') {
+      if (count >= 500) return { riskLevel: 'high', riskReason: '经验球数量极高，可能造成实体 tick 和渲染压力；需结合 profiler 主线程热点确认。' }
+      if (count >= 150) return { riskLevel: 'medium', riskReason: '经验球数量偏高，可能造成实体处理开销；需结合 profiler 主线程热点确认。' }
+      return {}
+    }
+
+    // villager — 村民
+    if (lower === 'minecraft:villager' || lower === 'villager') {
+      if (count >= 300) return { riskLevel: 'high', riskReason: '村民数量极高，AI/寻路/交易处理可能造成显著主线程压力；需结合 profiler 中 entity/ai/pathfind 热点确认。' }
+      if (count >= 100) return { riskLevel: 'medium', riskReason: '村民数量偏高，AI 和寻路可能产生实体处理开销；需结合 profiler 确认。' }
+      return {}
+    }
+
+    // armor_stand — 盔甲架
+    if (lower === 'minecraft:armor_stand' || lower === 'armor_stand') {
+      if (count >= 500) return { riskLevel: 'high', riskReason: '盔甲架数量极高，可能造成实体 tick 和渲染更新压力；需结合 profiler 确认。' }
+      if (count >= 200) return { riskLevel: 'medium', riskReason: '盔甲架数量偏高，可能产生实体处理开销；需结合 profiler 确认。' }
+      return {}
+    }
+
+    // item_frame / glow_item_frame — 展示框
+    if (lower === 'minecraft:item_frame' || lower === 'minecraft:glow_item_frame' || lower === 'item_frame' || lower === 'glow_item_frame') {
+      if (count >= 500) return { riskLevel: 'high', riskReason: '展示框数量极高，可能造成实体 tick 和渲染更新压力；需结合 profiler 确认。' }
+      if (count >= 200) return { riskLevel: 'medium', riskReason: '展示框数量偏高，可能产生实体处理开销；需结合 profiler 确认。' }
+      return {}
+    }
+
+    // minecart / boat — 矿车/船
+    if (lower === 'minecraft:minecart' || lower === 'minecart' ||
+        lower === 'minecraft:boat' || lower === 'boat' ||
+        lower === 'lootr:lootr_minecart') {
+      if (count >= 300) return { riskLevel: 'high', riskReason: '矿车/船类实体数量极高，可能造成实体 tick 和碰撞检测压力；需结合 profiler 主线程热点确认。' }
+      if (count >= 100) return { riskLevel: 'medium', riskReason: '矿车/船类实体数量偏高，可能产生实体处理开销；需结合 profiler 确认。' }
+      return {}
+    }
+
+    return {}
   }
 
   // ========== Profiler extraction ==========

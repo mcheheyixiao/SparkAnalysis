@@ -81,6 +81,7 @@ export interface NormalizedSummary {
     gc?: NormalizedGcSummary
     playerCount?: number
     worldEntities?: number
+    entityDistribution?: NormalizedEntityDistributionSummary
   }
   profiler: {
     threads: NormalizedThread[]
@@ -122,6 +123,46 @@ export interface SuspiciousMethod {
   method: string
   reason: string
   confidence: 'high' | 'medium' | 'low'
+}
+
+// ---- Entity type distribution (P7) ----
+
+export interface NormalizedEntityTypeStat {
+  type: string
+  count: number
+  ratio?: number
+  riskLevel?: 'low' | 'medium' | 'high'
+  riskReason?: string
+}
+
+export interface NormalizedWorldEntitySummary {
+  world: string
+  totalEntities: number
+  topTypes: NormalizedEntityTypeStat[]
+  otherTypesCount?: number
+  otherEntitiesTotal?: number
+  riskFlags?: string[]
+}
+
+export interface NormalizedHotEntityChunk {
+  world: string
+  chunkX: number
+  chunkZ: number
+  approxBlockX: number
+  approxBlockZ: number
+  totalEntities: number
+  topTypes: NormalizedEntityTypeStat[]
+  riskFlags?: string[]
+}
+
+export interface NormalizedEntityDistributionSummary {
+  totalEntities?: number
+  totalTypes?: number
+  worlds: NormalizedWorldEntitySummary[]
+  globalTopTypes: NormalizedEntityTypeStat[]
+  hotChunks?: NormalizedHotEntityChunk[]
+  riskFlags: string[]
+  limitations?: string[]
 }
 
 // ---- Rule analysis result ----

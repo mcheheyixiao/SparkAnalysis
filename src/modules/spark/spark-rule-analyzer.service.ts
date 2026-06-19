@@ -20,7 +20,10 @@ export class SparkRuleAnalyzer {
     // 4. GC/Memory analysis
     this.analyzeMemory(normalized, evidence, suspectedCauses, recommendedCommands)
 
-    // 5. Keyword scanning
+    // 5. Entity distribution analysis
+    this.analyzeEntityDistribution(normalized, evidence, suspectedCauses, recommendedCommands)
+
+    // 6. Keyword scanning
     this.scanKeywords(normalized, evidence, suspectedCauses)
 
     // Determine severity
@@ -304,6 +307,102 @@ export class SparkRuleAnalyzer {
     if (!hasGcIssues && !gc.warning) {
       // GC data exists but looks normal — don't flag anything
       // This is intentional: normal GC should not generate evidence
+    }
+  }
+
+  private analyzeEntityDistribution(
+    data: NormalizedSummary,
+    evidence: RuleEvidence[],
+    causes: SuspectedCause[],
+    commands: string[],
+  ): void {
+    const dist = data.health.entityDistribution
+    if (!dist) return
+
+    const totalEntities = dist.totalEntities
+    const globalTopTypes = dist.globalTopTypes || []
+
+    // 1. Total entity count analysis
+    if (totalEntities != null) {
+      if (totalEntities >= 10000) {
+        evidence.push({
+          title: '实体总数过高',
+          detail: `当前世界实体总数 ${totalEntities}，超过 10000，高实体数量可能造成实体 tick、碰撞、AI 或清理压力。`,
+          confidence: 'high',
+          type: 'system_metric',
+          canBeRootCause: true,
+        })
+        causes.push({
+          name: '实体数量过高',
+          category: 'entity',
+          reason: '实体总数明显偏高，可能造成主线程实体 tick 压力；需结合 profiler 热点确认。',
+          priority: 2,
+          confidence: 'high',
+        })
+        commands.push('/spark health --upload', '/spark profiler start --timeout 300')
+      } else if (totalEntities >= 5000) {
+        evidence.push({
+          title: '实体总数偏高',
+          detail: `当前世界实体总数 ${totalEntities}，超过 5000，实体数量偏高可能造成 tick 和 AI 处理压力。`,
+          confidence: 'medium',
+          type: 'system_metric',
+          canBeRootCause: true,
+        })
+        causes.push({
+          name: '实体数量偏高',
+          category: 'entity',
+          reason: '实体总数偏高，可能造成主线程实体 tick 压力；需结合 profiler 热点确认。',
+          priority: 2,
+          confidence: 'medium',
+        })
+        commands.push('/spark health --upload', '/spark profiler start --timeout 300')
+      } else if (totalEntities >= 1000) {
+        evidence.push({
+          title: '实体总数超过 1000（观察线索）',
+          detail: `世界实体总数 ${totalEntities}，超过 1000，属于需要结合 TPS/MSPT 和 profiler 继续观察的实体压力线索。`,
+          confidence: 'low',
+          type: 'system_metric',
+          canBeRootCause: false,
+        })
+      }
+    }
+
+    // 2. High/medium risk entity types
+    const riskyTypes = globalTopTypes.filter(
+      t => t.riskLevel === 'high' || t.riskLevel === 'medium'
+    )
+    const hasHighRisk = riskyTypes.some(t => t.riskLevel === 'high')
+
+    if (riskyTypes.length > 0) {
+      const top3 = riskyTypes.slice(0, 3)
+        .map(t => `${t.type}=${t.count}`)
+        .join(', ')
+
+      const confidence = hasHighRisk ? 'high' : 'medium'
+
+      evidence.push({
+        title: '高风险实体类型集中',
+        detail: `高风险实体类型: ${top3}${riskyTypes.length > 3 ? ' 等' : ''}。${riskyTypes[0]?.riskReason || '掉落物/经验球/村民/展示框/矿车等实体数量偏高，可能造成实体处理压力。'}`,
+        confidence,
+        type: 'system_metric',
+        canBeRootCause: true,
+      })
+
+      causes.push({
+        name: '高风险实体类型堆积',
+        category: 'entity',
+        reason: '掉落物/经验球/村民/展示框/矿车等实体数量偏高，可能造成实体处理压力；需要结合 profiler 中 entity/tick/aiStep/collision/pathfind 热点确认。',
+        priority: 2,
+        confidence,
+      })
+
+      // Recommend profiler commands if not already present
+      if (!commands.some(c => c.includes('profiler'))) {
+        commands.push('/spark profiler start --timeout 300')
+      }
+      if (!commands.some(c => c.includes('health'))) {
+        commands.push('/spark health --upload')
+      }
     }
   }
 

@@ -103,6 +103,83 @@ export class PromptBuilder {
       lines.push('')
     }
 
+    // Entity type distribution
+    const entityDist = normalized.health?.entityDistribution
+    if (entityDist) {
+      lines.push('### 实体类型分布（Entity Distribution）')
+      lines.push('')
+      lines.push('实体分析规则（重要 — 请严格遵循）：')
+      lines.push('- 实体数量和类型分布只能说明潜在压力，不能单独证明它就是 TPS/MSPT 下降根因。')
+      lines.push('- 掉落物、经验球、村民、盔甲架、展示框、矿车、船数量偏高时，可以作为 suspected_causes 的中/高置信线索。')
+      lines.push('- 如果 profiler 主线程热点也出现 entity、tick、aiStep、pathfind、collision、mob、goalSelector 等方法，实体原因置信度可以提高。')
+      lines.push('- 如果没有 profiler 主线程实体热点，只能把实体问题作为风险线索，不能写成主要根因。')
+      lines.push('- 当前没有玩家行为和精确坐标数据，禁止编造具体玩家、坐标、机器位置。')
+      lines.push('- hotChunks 的 approxBlockX/approxBlockZ 只是区块原点近似坐标，不代表实体精确位置。')
+      lines.push('')
+
+      if (entityDist.totalEntities != null) {
+        lines.push(`- 实体总数: ${entityDist.totalEntities}`)
+      }
+      if (entityDist.totalTypes != null) {
+        lines.push(`- 实体类型数: ${entityDist.totalTypes}`)
+      }
+
+      // Global top types (top 10)
+      const globalTop = entityDist.globalTopTypes || []
+      if (globalTop.length > 0) {
+        lines.push('- 全局 Top 实体类型:')
+        for (const t of globalTop.slice(0, 10)) {
+          const riskLabel = t.riskLevel ? ` [${t.riskLevel}风险]` : ''
+          const ratioStr = t.ratio != null ? ` (${(t.ratio * 100).toFixed(1)}%)` : ''
+          lines.push(`  - ${t.type}: ${t.count}${ratioStr}${riskLabel}`)
+        }
+      }
+
+      // World breakdown
+      const worlds = entityDist.worlds || []
+      for (const w of worlds) {
+        if (w.totalEntities > 0) {
+          lines.push(`- ${w.world}: ${w.totalEntities} 实体`)
+          const topTypes = w.topTypes || []
+          if (topTypes.length > 0) {
+            const top5Str = topTypes.slice(0, 5)
+              .map(t => `${t.type}=${t.count}`)
+              .join(', ')
+            lines.push(`  Top: ${top5Str}`)
+          }
+        }
+      }
+
+      // Hot chunks
+      const hotChunks = entityDist.hotChunks
+      if (hotChunks && hotChunks.length > 0) {
+        lines.push('- 高实体区块 (Top 5):')
+        for (const c of hotChunks.slice(0, 5)) {
+          const topStr = (c.topTypes || []).slice(0, 3)
+            .map(t => `${t.type}=${t.count}`)
+            .join(', ')
+          lines.push(`  - [${c.world}] chunk(${c.chunkX},${c.chunkZ}) ≈ (${c.approxBlockX},${c.approxBlockZ}): ${c.totalEntities} entities${topStr ? ' (' + topStr + ')' : ''}`)
+        }
+      }
+
+      // Risk flags
+      const distRiskFlags = entityDist.riskFlags
+      if (distRiskFlags && distRiskFlags.length > 0) {
+        lines.push(`- 风险标记: ${distRiskFlags.join(', ')}`)
+      }
+
+      // Limitations
+      const distLimitations = entityDist.limitations
+      if (distLimitations && distLimitations.length > 0) {
+        lines.push('- 限制说明:')
+        for (const l of distLimitations) {
+          lines.push(`  - ${l}`)
+        }
+      }
+
+      lines.push('')
+    }
+
     // CPU & Memory
     const cpu = normalized.health?.cpu
     if (cpu && (cpu.process !== undefined || cpu.system !== undefined)) {
