@@ -25,7 +25,9 @@
     <footer class="public-footer">
       <div class="container footer-inner">
         <span>Spark AI Analyzer — Minecraft 性能分析工具</span>
-        <span class="footer-muted">基于 spark.lucko.me 数据 & DeepSeek AI</span>
+        <span class="footer-muted">
+          <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">浙ICP备2023024426号</a>
+        </span>
       </div>
     </footer>
   </div>
@@ -85,6 +87,15 @@ import AppLogo from '@/components/common/AppLogo.vue'
 
 .footer-muted {
   color: var(--text-muted);
+}
+
+.footer-muted a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.footer-muted a:hover {
+  text-decoration: underline;
 }
 
 @media (max-width: 768px) {

@@ -88,16 +88,23 @@
             />
           </div>
 
-          <!-- Server environment info -->
-          <div class="summary-meta" v-if="summaryMeta.length">
-            <n-tag
-              v-for="item in summaryMeta"
-              :key="item.key"
-              size="small"
-              :bordered="false"
-            >
-              {{ item.label }}：{{ item.value }}
-            </n-tag>
+          <!-- Summary footer meta -->
+          <div class="summary-footer" v-if="summaryMeta.length || summaryDurationText">
+            <div class="summary-meta" v-if="summaryMeta.length">
+              <n-tag
+                v-for="item in summaryMeta"
+                :key="item.key"
+                size="small"
+                :bordered="false"
+              >
+                {{ item.label }}：{{ item.value }}
+              </n-tag>
+            </div>
+
+            <div class="summary-duration" v-if="summaryDurationText">
+              <span class="summary-duration-label">采样时长</span>
+              <span class="summary-duration-value">{{ summaryDurationText }}</span>
+            </div>
           </div>
         </n-card>
 
@@ -432,16 +439,6 @@ const summaryMetrics = computed<SummaryMetric[]>(() => {
     })
   }
 
-  const durationSeconds = getNumberPath(s, ['timing', 'durationSeconds'])
-  if (durationSeconds != null) {
-    metrics.push({
-      key: 'duration',
-      label: '采样时长',
-      value: formatDurationSeconds(durationSeconds),
-      trend: 'stable',
-    })
-  }
-
   return metrics
 })
 
@@ -463,6 +460,16 @@ const summaryMeta = computed(() => {
   if (sparkVersion) items.push({ key: 'sparkVersion', label: 'spark', value: sparkVersion })
 
   return items
+})
+
+// ── Sampling duration (separate from metrics grid, shown as footer text) ──
+
+const summaryDurationText = computed(() => {
+  const s = report.value.normalizedSummary
+  if (!s) return ''
+
+  const durationSeconds = getNumberPath(s, ['timing', 'durationSeconds'])
+  return durationSeconds != null ? formatDurationSeconds(durationSeconds) : ''
 })
 
 // ── Display markdown priority ──
@@ -627,11 +634,51 @@ onBeforeUnmount(() => {
   margin-top: 16px;
 }
 
+.summary-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+
 .summary-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 12px;
+  min-width: 0;
+}
+
+.summary-duration {
+  margin-left: auto;
+  font-size: 0.78rem;
+  color: var(--text-tertiary, #94A3B8);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.summary-duration-label {
+  color: var(--text-tertiary, #94A3B8);
+}
+
+.summary-duration-value {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+@media (max-width: 640px) {
+  .summary-footer {
+    align-items: flex-start;
+  }
+
+  .summary-duration {
+    margin-left: 0;
+    width: 100%;
+    justify-content: flex-start;
+  }
 }
 
 .report-section-card {
