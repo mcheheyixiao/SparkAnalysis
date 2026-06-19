@@ -37,7 +37,7 @@ npm install
 npm run dev
 ```
 
-开发服务器运行在 `http://localhost:5173`，自动代理 `/api` 到 `http://localhost:3001`。
+开发服务器运行在 `http://localhost:3099`，自动代理 `/api` 到 `http://localhost:3001`。
 
 ### 生产构建
 

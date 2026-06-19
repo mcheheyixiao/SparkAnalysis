@@ -130,7 +130,7 @@ npm install
 npm run dev
 ```
 
-前端开发服务器运行在 `http://localhost:5173`，自动代理 `/api` 到后端。
+前端开发服务器运行在 `http://localhost:3099`，自动代理 `/api` 到后端。
 
 ### 后端生产构建
 
@@ -934,7 +934,7 @@ curl https://你的域名.com/api/health
 
 出于安全和简洁考虑，首页不展示"管理后台"按钮。请通过直链访问：
 
-- **开发环境：** `http://localhost:5173/admin`
+- **开发环境：** `http://localhost:3099/admin`
 - **生产环境：** `https://你的域名/admin`
 
 未登录时会自动跳转到 `/admin/login?redirect=/admin`，登录后进入后台仪表盘。
