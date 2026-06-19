@@ -179,11 +179,13 @@ const message = useMessage()
 
 const topRef = ref<HTMLElement | null>(null)
 
-useRevealAnimation(topRef, {
+const { play: playTopReveal } = useRevealAnimation(topRef, {
   selector: '.reveal-item',
   stagger: 0.06,
-  autoPlay: true,
+  autoPlay: false,
 })
+
+const topRevealPlayed = ref(false)
 const reportId = route.params.reportId as string
 
 const report = ref<PublicReport>({ reportId, status: 'processing' })
@@ -274,11 +276,19 @@ async function loadReport() {
       router.replace({ name: 'analyze', params: { reportId } })
     }
 
-    // After data loads and DOM updates, init scroll reveals
+    // After data loads and DOM updates, play top reveals then init scroll reveals
     await nextTick()
-    if (!prefersReduced && dataReady.value) {
-      initScrollReveal()
-      refreshTriggers()
+
+    if (dataReady.value) {
+      if (!topRevealPlayed.value) {
+        topRevealPlayed.value = true
+        playTopReveal()
+      }
+
+      if (!prefersReduced) {
+        initScrollReveal()
+        refreshTriggers()
+      }
     }
   } catch {
     message.error('加载报告失败')
