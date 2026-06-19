@@ -92,6 +92,26 @@ describe('kPy1L2N05S regression', () => {
       )
       expect(hasLimitation).toBe(true)
     })
+
+    // ── P6: GC tests ──
+    it('should have GC data (not empty object)', () => {
+      expect(fixture.health.gc).toBeDefined()
+      expect(fixture.health.gc!.collectors).toBeDefined()
+      expect(fixture.health.gc!.collectors!.length).toBeGreaterThan(0)
+    })
+
+    it('should have G1 Young and Old Generation collectors', () => {
+      const names = fixture.health.gc!.collectors.map(c => c.name)
+      expect(names.some(n => n.includes('Young'))).toBe(true)
+      expect(names.some(n => n.includes('Old'))).toBe(true)
+    })
+
+    it('should have Old GC with 0 collections and hasOldGc=false', () => {
+      const old = fixture.health.gc!.collectors.find(c => c.name.includes('Old'))
+      expect(old).toBeDefined()
+      expect(old!.collections).toBe(0)
+      expect(fixture.health.gc!.hasOldGc).toBe(false)
+    })
   })
 
   describe('RuleAnalyzer', () => {
@@ -135,6 +155,22 @@ describe('kPy1L2N05S regression', () => {
     it('should recommend profiler command for deeper analysis', () => {
       const hasProfiler = result.recommendedCommands.some(c => c.includes('profiler'))
       expect(hasProfiler).toBe(true)
+    })
+
+    // ── P6: GC rule analysis ──
+    it('should NOT flag GC as root cause when Old GC=0', () => {
+      const gcEvidence = result.evidence.filter(e =>
+        e.title.includes('GC') || e.title.includes('Old')
+      )
+      // No GC issues should be raised when Old GC is 0 and avgTime is low
+      expect(gcEvidence.length).toBe(0)
+    })
+
+    it('should NOT have GC-related suspected causes', () => {
+      const gcCauses = result.suspectedCauses.filter(
+        c => c.category === 'jvm' || c.name.toLowerCase().includes('gc')
+      )
+      expect(gcCauses.length).toBe(0)
     })
   })
 

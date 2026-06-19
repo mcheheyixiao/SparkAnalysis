@@ -91,6 +91,18 @@ export class PromptBuilder {
       lines.push('')
     }
 
+    // Duration & player context
+    const duration = normalized.timing?.durationSeconds
+    const playerCount = normalized.health?.playerCount
+    const worldEntities = normalized.health?.worldEntities
+    if (duration || playerCount || worldEntities) {
+      lines.push('### 采样上下文')
+      if (duration !== undefined) lines.push(`- 采样时长: ${duration} 秒（约 ${Math.round(duration / 60)} 分钟）`)
+      if (playerCount !== undefined) lines.push(`- 在线玩家: ${playerCount} 人`)
+      if (worldEntities !== undefined) lines.push(`- 世界实体总数: ${worldEntities}`)
+      lines.push('')
+    }
+
     // CPU & Memory
     const cpu = normalized.health?.cpu
     if (cpu && (cpu.process !== undefined || cpu.system !== undefined)) {
@@ -103,8 +115,9 @@ export class PromptBuilder {
     const mem = normalized.health?.memory
     if (mem && (mem.usedMB !== undefined || mem.usagePercent !== undefined)) {
       lines.push('### 内存')
-      if (mem.usedMB !== undefined && mem.maxMB !== undefined) {
-        lines.push(`- 已用: ${mem.usedMB}MB / ${mem.maxMB}MB`)
+      if (mem.usedMB !== undefined) {
+        const maxStr = mem.maxMB && mem.maxMB > 0 ? ` / ${mem.maxMB}MB` : 'MB（上限未设置）'
+        lines.push(`- 已用: ${mem.usedMB}${maxStr}`)
       }
       if (mem.usagePercent !== undefined) lines.push(`- 使用率: ${mem.usagePercent}%`)
       lines.push('')
@@ -112,11 +125,35 @@ export class PromptBuilder {
 
     // GC
     const gc = normalized.health?.gc
-    if (gc) {
-      if (gc.collectors?.length) lines.push(`- GC 收集器: ${gc.collectors.join(', ')}`)
-      if (gc.frequency) lines.push(`- GC 频率: ${gc.frequency}`)
+    if (gc && gc.collectors?.length) {
+      lines.push('### GC（垃圾回收）')
+      lines.push('GC 规则（重要 — 请严格遵循）：')
+      lines.push('- GC 数据存在但没有明显异常 → 不要把 GC 写成主要原因')
+      lines.push('- GC 数据缺少暂停分布或采样时长 → 只能做低/中置信判断')
+      lines.push('- 不能仅凭 GC collectors 存在就断言 GC 是 TPS 下降根因')
+      lines.push('- Old GC collections = 0 且 avgTime 正常 → GC 不是主要证据')
+      lines.push('')
+      for (const c of gc.collectors) {
+        const parts: string[] = []
+        if (c.collections != null) parts.push(`collections=${c.collections}`)
+        if (c.timeMs != null) parts.push(`timeMs=${c.timeMs}`)
+        if (c.averageTimeMs != null) parts.push(`avgTimeMs=${c.averageTimeMs.toFixed(1)}`)
+        if (c.maxTimeMs != null) parts.push(`maxTimeMs=${c.maxTimeMs}`)
+        lines.push(`- ${c.name}: ${parts.join(', ') || '(无详细数据)'}`)
+      }
+      if (gc.totalCollections != null) lines.push(`- 总收集次数: ${gc.totalCollections}`)
+      if (gc.totalTimeMs != null) lines.push(`- 总耗时: ${gc.totalTimeMs}ms`)
+      if (gc.hasOldGc) {
+        lines.push(`- ⚠ 存在 Old GC（老年代回收），可能造成较长时间停顿`)
+      } else {
+        lines.push(`- Old GC: 未检测到老年代回收，GC 压力较低`)
+      }
       if (gc.warning) lines.push(`- GC 警告: ${gc.warning}`)
-      if (gc.collectors?.length || gc.frequency || gc.warning) lines.push('')
+      lines.push('')
+    } else {
+      lines.push('### GC（垃圾回收）')
+      lines.push('- ⚠ 当前未提取到 GC 数据，无法判断 GC 是否导致卡顿')
+      lines.push('')
     }
 
     // Main thread top methods
@@ -272,8 +309,9 @@ export class PromptBuilder {
    - 来源名称本身（如 ftbessentials、luckperms）不能作为判定依据
 
 3. 缺失信息的处理：
-   - 如果缺少 GC 数据，必须在 missing_information 中说明"缺少 GC 数据，无法判断 GC 是否导致卡顿"
-   - 如果缺少玩家在线人数，建议在 missing_information 中说明
+   - 如果 GC 数据已在 evidence context 中提供且无明显异常，不要写"缺少 GC 数据"
+   - 如果 GC 数据确实缺失（evidence context 显示 GC 未提取到），才在 missing_information 中说明
+   - 在线玩家数、采样时长、实体数已在「采样上下文」中提供（如有），不要写"未提供"
    - 如果 profiler 调用树不完整，说明"需要更完整的 profiler 采样才能定位具体模组"
    - 如果 method 来源全部是 minecraft，说明"当前热点均为原版方法，无法归因到具体模组"
 
@@ -286,6 +324,8 @@ export class PromptBuilder {
    - suspected_causes 最多 3 条，每条必须有具体的证据来源（方法名+占比）
    - fix_plan 最多 5 条，难度标记为 easy/medium/hard
    - key_evidence 最多 5 条，保留高/中置信度的
+   - 原版/Java top methods 是样本事实，不要标记为"解析bug"
+   - mod 来源缺少 percent（显示为 ?%）是因为没有对应 mod 方法进入主线程热点，不是解析失败，只能作为低置信来源线索
 
 请生成中文诊断报告，输出严格 JSON 格式。`
   }

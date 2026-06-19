@@ -1,4 +1,4 @@
-import type { SparkRawData, NormalizedSummary, NormalizedThread, NormalizedSource } from './spark.types.js'
+import type { SparkRawData, NormalizedSummary, NormalizedThread, NormalizedSource, NormalizedGcSummary, NormalizedGcCollector } from './spark.types.js'
 
 interface SourceIndex {
   classSources: Map<string, string>
@@ -47,8 +47,15 @@ export class SparkNormalizer {
 
     // ---- Timing ----
     const timing = {
-      createdAt: metadata?.createdAt || raw?.createdAt || full?.createdAt,
-      durationSeconds: rawData.durationSeconds ?? metadata?.durationSeconds ?? raw?.durationSeconds ?? full?.durationSeconds ?? full?.duration,
+      createdAt: metadata?.createdAt || raw?.createdAt || full?.createdAt || full?.metadata?.startTime || metadata?.startTime,
+      durationSeconds: rawData.durationSeconds
+        ?? this.durationToSeconds(metadata?.durationSeconds) ?? this.durationToSeconds(raw?.durationSeconds)
+        ?? this.durationToSeconds(full?.durationSeconds) ?? this.durationToSeconds(full?.duration)
+        // Spark platformStatistics.uptime is in milliseconds
+        ?? this.msToSeconds(this.pickFirst(full, ['metadata.platformStatistics.uptime']))
+        ?? this.msToSeconds(this.pickFirst(raw, ['metadata.platformStatistics.uptime', 'metadata.metadata.platformStatistics.uptime']))
+        ?? this.durationToSeconds(metadata?.interval)
+        ?? this.durationToSeconds(full?.metadata?.interval),
     }
 
     // ---- Health ----
@@ -195,10 +202,42 @@ export class SparkNormalizer {
       || raw?.health?.cpu || raw?.cpu || full?.cpu || full?.health?.cpu
       || this.pickFirst<any>(raw, ['system.cpu', 'process.cpu'])
 
-    if (cpuObj && typeof cpuObj === 'object') {
+    // If cpu object doesn't have usable numeric values, try timeWindowStatistics
+    let cpuFromWindows: { process?: number; system?: number } | undefined
+    const cpuObjHasUsableFields = cpuObj && typeof cpuObj === 'object'
+      && ((typeof (cpuObj as any)?.process === 'number') || (typeof (cpuObj as any)?.system === 'number')
+          || (typeof (cpuObj as any)?.processUsage?.last1m === 'number') || (typeof (cpuObj as any)?.systemUsage?.last1m === 'number'))
+    if (!cpuObjHasUsableFields) {
+      const tws = full?.timeWindowStatistics
+      if (tws && typeof tws === 'object') {
+        const windows = Object.values(tws) as any[]
+        const cpuProcessVals: number[] = []
+        const cpuSystemVals: number[] = []
+        for (const w of windows) {
+          if (typeof w?.cpuProcess === 'number') cpuProcessVals.push(w.cpuProcess)
+          if (typeof w?.cpuSystem === 'number') cpuSystemVals.push(w.cpuSystem)
+        }
+        if (cpuProcessVals.length > 0 || cpuSystemVals.length > 0) {
+          cpuFromWindows = {
+            process: cpuProcessVals.length > 0 ? Math.round(this.avg(cpuProcessVals) * 100) : undefined,
+            system: cpuSystemVals.length > 0 ? Math.round(this.avg(cpuSystemVals) * 100) : undefined,
+          }
+        }
+      }
+    }
+
+    const effectiveCpu = cpuObj || cpuFromWindows
+    if (effectiveCpu && typeof effectiveCpu === 'object') {
+      // Handle nested CPU usage objects (spark system info): { processUsage: { last1m: 0.33 }, systemUsage: { last1m: 0.33 } }
+      const procUsage = effectiveCpu?.processUsage
+      const sysUsage = effectiveCpu?.systemUsage
       const cpu = {
-        process: this.normalizePercent(cpuObj?.process) ?? this.normalizePercent(cpuObj?.processLoad),
-        system: this.normalizePercent(cpuObj?.system) ?? this.normalizePercent(cpuObj?.systemLoad),
+        process: this.normalizePercent(effectiveCpu?.process) ?? this.normalizePercent(effectiveCpu?.processLoad) ?? this.normalizePercent(effectiveCpu?.cpuProcess)
+          ?? this.normalizePercent(procUsage?.last1m) ?? this.normalizePercent(procUsage?.last15m)
+          ?? this.normalizePercent(procUsage?.mean) ?? this.normalizePercent(procUsage?.avg),
+        system: this.normalizePercent(effectiveCpu?.system) ?? this.normalizePercent(effectiveCpu?.systemLoad) ?? this.normalizePercent(effectiveCpu?.cpuSystem)
+          ?? this.normalizePercent(sysUsage?.last1m) ?? this.normalizePercent(sysUsage?.last15m)
+          ?? this.normalizePercent(sysUsage?.mean) ?? this.normalizePercent(sysUsage?.avg),
       }
       if (cpu.process != null || cpu.system != null) {
         health.cpu = cpu
@@ -213,14 +252,21 @@ export class SparkNormalizer {
       || this.pickFirst<any>(raw, ['heap', 'jvm.memory', 'system.memory'])
 
     if (memObj && typeof memObj === 'object') {
+      // Handle nested heap sub-object: { heap: { used, committed }, nonHeap, pools }
+      // Spark platformStatistics.memory uses this nested structure.
+      const heapObj = memObj?.heap
       const used = this.bytesToMB(
         memObj?.used ?? memObj?.usedBytes ?? memObj?.heapUsed ?? memObj?.usedMemory
+          ?? heapObj?.used ?? heapObj?.usedBytes ?? heapObj?.heapUsed
       )
       const max = this.bytesToMB(
         memObj?.max ?? memObj?.maxBytes ?? memObj?.total ?? memObj?.committed ?? memObj?.heapMax ?? memObj?.maxMemory
+          ?? heapObj?.max ?? heapObj?.maxBytes ?? heapObj?.total ?? heapObj?.committed ?? heapObj?.heapMax
       )
       const usagePercent = this.normalizePercent(memObj?.usagePercent)
         ?? this.normalizePercent(memObj?.usage)
+        ?? this.normalizePercent(heapObj?.usagePercent)
+        ?? this.normalizePercent(heapObj?.usage)
         ?? (max != null && max > 0 && used != null ? Math.round((used / max) * 100) : undefined)
 
       if (used != null || max != null) {
@@ -230,18 +276,27 @@ export class SparkNormalizer {
     }
 
     // --- GC ---
-    const gcObj = this.findFirstDeep<any>(raw, ['gc'])
-      || this.findFirstDeep<any>(full, ['gc'])
-      || raw?.health?.gc || raw?.gc || full?.gc || full?.health?.gc
-      || this.pickFirst<any>(raw, ['garbageCollector', 'jvm.gc'])
-
-    if (gcObj && typeof gcObj === 'object') {
-      health.gc = {
-        collectors: gcObj?.collectors,
-        frequency: gcObj?.frequency,
-        warning: gcObj?.warning,
-      }
+    const gcSummary = this.extractGcSummary(raw, full)
+    if (gcSummary) {
+      health.gc = gcSummary
       hasAnyHealthData = true
+    }
+
+    // --- Player count ---
+    const playerCount =
+      this.toFiniteNumber(this.pickFirst(full, ['metadata.platformStatistics.playerCount']))
+      ?? this.toFiniteNumber(this.pickFirst(raw, ['metadata.platformStatistics.playerCount', 'metadata.metadata.platformStatistics.playerCount']))
+      ?? this.toFiniteNumber(raw?.playerCount ?? full?.playerCount)
+    if (playerCount != null) {
+      health.playerCount = playerCount
+    }
+
+    // --- World entities ---
+    const worldEntities =
+      this.toFiniteNumber(this.pickFirst(full, ['metadata.platformStatistics.world.totalEntities']))
+      ?? this.toFiniteNumber(this.pickFirst(raw, ['metadata.platformStatistics.world.totalEntities', 'metadata.metadata.platformStatistics.world.totalEntities']))
+    if (worldEntities != null) {
+      health.worldEntities = worldEntities
     }
 
     if (!hasAnyHealthData && reportType === 'health') {
@@ -255,6 +310,219 @@ export class SparkNormalizer {
     }
 
     return health
+  }
+
+  // ========== GC extraction (P6) ==========
+
+  /**
+   * Extract structured GC summary from spark metadata.
+   * Priority order:
+   * 1. raw.metadata.platformStatistics.gc
+   * 2. full.metadata.platformStatistics.gc
+   * 3. raw.platformStatistics.gc
+   * 4. full.platformStatistics.gc
+   * 5. raw.health.gc
+   * 6. full.health.gc
+   * 7. raw.gc
+   * 8. full.gc
+   * 9. findFirstDeep as last resort
+   */
+  private extractGcSummary(raw: any, full?: any): NormalizedGcSummary | undefined {
+    // Priority-ordered GC data sources
+    const gcSources: unknown[] = []
+
+    // 1-2: metadata.platformStatistics.gc (primary source for spark raw data)
+    const rawMetaGc = this.getByPath(raw, 'metadata.platformStatistics.gc')
+    if (rawMetaGc !== undefined && rawMetaGc !== null) gcSources.push(rawMetaGc)
+
+    if (full) {
+      const fullMetaGc = this.getByPath(full, 'metadata.platformStatistics.gc')
+      if (fullMetaGc !== undefined && fullMetaGc !== null) gcSources.push(fullMetaGc)
+    }
+
+    // 3-4: platformStatistics.gc
+    const rawPlatGc = this.getByPath(raw, 'platformStatistics.gc')
+    if (rawPlatGc !== undefined && rawPlatGc !== null) gcSources.push(rawPlatGc)
+
+    if (full) {
+      const fullPlatGc = this.getByPath(full, 'platformStatistics.gc')
+      if (fullPlatGc !== undefined && fullPlatGc !== null) gcSources.push(fullPlatGc)
+    }
+
+    // 5-6: health.gc
+    const rawHealthGc = this.getByPath(raw, 'health.gc')
+    if (rawHealthGc !== undefined && rawHealthGc !== null) gcSources.push(rawHealthGc)
+
+    if (full) {
+      const fullHealthGc = this.getByPath(full, 'health.gc')
+      if (fullHealthGc !== undefined && fullHealthGc !== null) gcSources.push(fullHealthGc)
+    }
+
+    // 7-8: top-level gc
+    if (raw?.gc !== undefined && raw.gc !== null) gcSources.push(raw.gc)
+    if (full?.gc !== undefined && full.gc !== null) gcSources.push(full.gc)
+
+    // 9: findFirstDeep as last resort (but skip if we already have sources from metadata path)
+    if (gcSources.length === 0) {
+      const deepGc = this.findFirstDeep<any>(raw, ['gc']) || this.findFirstDeep<any>(full, ['gc'])
+      if (deepGc !== undefined && deepGc !== null) gcSources.push(deepGc)
+    }
+
+    // Parse each source until we get valid collectors
+    for (const gcObj of gcSources) {
+      if (!gcObj || typeof gcObj !== 'object') continue
+      const collectors = this.normalizeGcCollectors(gcObj)
+      if (collectors.length > 0) {
+        return this.buildGcSummary(collectors, gcObj)
+      }
+    }
+
+    return undefined
+  }
+
+  /**
+   * Parse GC collectors from an unknown GC object, supporting:
+   * - Object format: { "G1 Young Generation": { total: 30, avgTime: 23 }, ... }
+   * - Array format: [ { name: "G1 Young Generation", collections: 30, timeMs: 4567 }, ... ]
+   * - Nested collectors: { collectors: [ ... ] }
+   */
+  private normalizeGcCollectors(gcObj: unknown): NormalizedGcCollector[] {
+    if (!gcObj || typeof gcObj !== 'object') return []
+
+    const record = gcObj as Record<string, unknown>
+
+    // Nested collectors array
+    if (Array.isArray(record.collectors)) {
+      return (record.collectors as any[]).map((c: any) => this.parseCollectorEntry(c)).filter((c): c is NormalizedGcCollector => c !== null)
+    }
+
+    // Array format: direct array of collector objects
+    if (Array.isArray(gcObj)) {
+      return (gcObj as any[]).map((c: any) => this.parseCollectorEntry(c)).filter((c): c is NormalizedGcCollector => c !== null)
+    }
+
+    // Object format: keys are collector names, values are stats objects
+    const collectors: NormalizedGcCollector[] = []
+    for (const [key, val] of Object.entries(record)) {
+      // Skip non-collector keys
+      if (['collectors', 'frequency', 'warning', 'type', 'name', 'uptime'].includes(key.toLowerCase())) continue
+      if (typeof val !== 'object' || val === null) continue
+
+      const collector = this.parseCollectorEntry({ name: key, ...(val as Record<string, unknown>) })
+      if (collector) collectors.push(collector)
+    }
+
+    return collectors
+  }
+
+  /**
+   * Parse a single collector entry, extracting known field names.
+   */
+  private parseCollectorEntry(entry: any): NormalizedGcCollector | null {
+    if (!entry || typeof entry !== 'object') return null
+
+    const name = typeof entry.name === 'string' ? entry.name : undefined
+    if (!name) return null // name is required
+
+    const record = entry as Record<string, unknown>
+
+    // collections: total (spark), collections, collectionCount, count, runs
+    const collections = this.pickNumber(record, ['total', 'collections', 'collectionCount', 'count', 'runs'])
+
+    // time: avgTime (spark), time, timeMs, totalTime, totalTimeMs, collectionTime, collectionTimeMs, duration, durationMs
+    const timeMs = this.pickNumber(record, ['avgTime', 'time', 'timeMs', 'totalTime', 'totalTimeMs', 'collectionTime', 'collectionTimeMs', 'duration', 'durationMs'])
+
+    // average: avgTime (spark), averageTime, averageTimeMs, avg, avgTimeMs, mean
+    const averageTimeMs = this.pickNumber(record, ['avgTime', 'averageTime', 'averageTimeMs', 'avg', 'avgTimeMs', 'mean'])
+
+    // max: maxTime, maxTimeMs, max
+    const maxTimeMs = this.pickNumber(record, ['maxTime', 'maxTimeMs', 'max'])
+
+    // last: lastTime, lastTimeMs
+    const lastTimeMs = this.pickNumber(record, ['lastTime', 'lastTimeMs'])
+
+    // avgFrequency is in ms between collections — not a time metric, but useful for context
+    // We store it as a debug field or skip; don't confuse with timeMs
+
+    return {
+      name,
+      ...(collections != null ? { collections } : {}),
+      ...(timeMs != null ? { timeMs } : {}),
+      ...(averageTimeMs != null ? { averageTimeMs } : {}),
+      ...(maxTimeMs != null ? { maxTimeMs } : {}),
+      ...(lastTimeMs != null ? { lastTimeMs } : {}),
+    }
+  }
+
+  /**
+   * Build the summary object from parsed collectors.
+   */
+  private buildGcSummary(collectors: NormalizedGcCollector[], _rawGcObj: unknown): NormalizedGcSummary {
+    const totalCollections = collectors.reduce((sum, c) => sum + (c.collections || 0), 0)
+    const totalTimeMs = collectors.reduce((sum, c) => sum + (c.timeMs || 0), 0)
+
+    const youngCollectors = collectors.filter(c => c.name.toLowerCase().includes('young'))
+    const oldCollectors = collectors.filter(c => c.name.toLowerCase().includes('old'))
+
+    const youngCollections = youngCollectors.reduce((sum, c) => sum + (c.collections || 0), 0)
+    const youngTimeMs = youngCollectors.reduce((sum, c) => sum + (c.timeMs || 0), 0)
+    const oldCollections = oldCollectors.reduce((sum, c) => sum + (c.collections || 0), 0)
+    const oldTimeMs = oldCollectors.reduce((sum, c) => sum + (c.timeMs || 0), 0)
+    const hasOldGc = oldCollections > 0 || oldTimeMs > 0
+
+    // Check for warning in raw GC object
+    const warning = typeof (_rawGcObj as any)?.warning === 'string' ? (_rawGcObj as any).warning : undefined
+
+    return {
+      collectors,
+      ...(totalCollections > 0 || collectors.some(c => c.collections != null) ? { totalCollections } : {}),
+      ...(totalTimeMs > 0 || collectors.some(c => c.timeMs != null) ? { totalTimeMs } : {}),
+      ...(youngCollections > 0 ? { youngCollections } : {}),
+      ...(youngTimeMs > 0 ? { youngTimeMs } : {}),
+      ...(oldCollections > 0 ? { oldCollections } : {}),
+      ...(oldTimeMs > 0 ? { oldTimeMs } : {}),
+      hasOldGc,
+      ...(warning ? { warning } : {}),
+    }
+  }
+
+  /**
+   * Safely convert a value to a finite number, returning undefined if invalid.
+   */
+  private toFiniteNumber(value: unknown): number | undefined {
+    return this.toNumber(value)
+  }
+
+  /**
+   * Convert milliseconds to seconds. Returns undefined if value is null/NaN.
+   */
+  private msToSeconds(value: unknown): number | undefined {
+    const n = this.toFiniteNumber(value)
+    if (n == null) return undefined
+    return Math.round(n / 1000)
+  }
+
+  /**
+   * Interpret a duration value as seconds. If value > 10000, assume it's in ms and convert.
+   */
+  private durationToSeconds(value: unknown): number | undefined {
+    const n = this.toFiniteNumber(value)
+    if (n == null) return undefined
+    // If value looks like milliseconds (> 10000), convert to seconds
+    if (n > 10000) return Math.round(n / 1000)
+    return n
+  }
+
+  /**
+   * Pick the first finite number from an object given a list of candidate keys.
+   */
+  private pickNumber(obj: Record<string, unknown>, keys: string[]): number | undefined {
+    for (const key of keys) {
+      const val = obj[key]
+      const n = this.toNumber(val)
+      if (n != null) return n
+    }
+    return undefined
   }
 
   // ========== Profiler extraction ==========

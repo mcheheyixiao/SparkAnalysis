@@ -60,6 +60,7 @@
 - **SSRF 防护** — `safeFetch` 仅允许 HTTPS 请求 `spark.lucko.me`，query 参数白名单仅限 `raw=1` 和 `full=true`，严格校验路径和域名。
 - **前端不直接请求 spark** — 所有 spark 数据抓取由后端完成，前端仅通过后端 API 获取分析结果。
 - **protobuf / spark-usercontent** — spark 原始数据以 protobuf 格式存储在 `spark-usercontent.lucko.me/{code}`，此为后续增强路线。当前使用 JSON raw endpoint 已能满足分析需求。
+- **GC 数据提取** — 系统从 spark raw metadata 的 `metadata.platformStatistics.gc` 路径提取 GC（垃圾回收）数据，包括 G1 Young/Old Generation 的收集次数和平均耗时。GC 数据用于辅助判断，不会单独作为 TPS 下降根因。如果 GC 数据正常（Old GC = 0，平均耗时不高），报告会明确说明 GC 不是当前主要证据。
 
 ## 来源分析分级
 

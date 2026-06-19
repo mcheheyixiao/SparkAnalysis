@@ -260,6 +260,107 @@ describe('SparkNormalizer', () => {
     })
   })
 
+  describe('GC extraction (P6)', () => {
+    it('should extract GC from metadata.platformStatistics.gc (object format)', () => {
+      const raw = makeRaw({
+        reportType: 'sampler',
+        rawJson: {
+          metadata: {
+            platformStatistics: {
+              gc: {
+                'G1 Young Generation': { total: 30, avgTime: 23.07 },
+                'G1 Old Generation': { total: 0, avgTime: 0 },
+              },
+            },
+          },
+        },
+      })
+      const result = normalizer.normalize(raw)
+      expect(result.health.gc).toBeDefined()
+      expect(result.health.gc!.collectors).toHaveLength(2)
+      const young = result.health.gc!.collectors.find(c => c.name === 'G1 Young Generation')
+      expect(young).toBeDefined()
+      expect(young!.collections).toBe(30)
+      expect(young!.averageTimeMs).toBeCloseTo(23.07)
+      const old = result.health.gc!.collectors.find(c => c.name === 'G1 Old Generation')
+      expect(old).toBeDefined()
+      expect(old!.collections).toBe(0)
+      expect(result.health.gc!.hasOldGc).toBe(false)
+    })
+
+    it('should extract GC from metadata.platformStatistics.gc (array format)', () => {
+      const raw = makeRaw({
+        reportType: 'sampler',
+        rawJson: {
+          metadata: {
+            platformStatistics: {
+              gc: [
+                { name: 'G1 Young Generation', collections: 100, timeMs: 4567 },
+                { name: 'G1 Old Generation', collections: 5, timeMs: 1200 },
+              ],
+            },
+          },
+        },
+      })
+      const result = normalizer.normalize(raw)
+      expect(result.health.gc).toBeDefined()
+      expect(result.health.gc!.collectors).toHaveLength(2)
+      expect(result.health.gc!.hasOldGc).toBe(true)
+      expect(result.health.gc!.totalCollections).toBe(105)
+    })
+
+    it('should extract GC from nested collectors format', () => {
+      const raw = makeRaw({
+        reportType: 'sampler',
+        rawJson: {
+          metadata: {
+            platformStatistics: {
+              gc: {
+                collectors: [
+                  { name: 'G1 Young Generation', collections: 50, timeMs: 2000 },
+                ],
+              },
+            },
+          },
+        },
+      })
+      const result = normalizer.normalize(raw)
+      expect(result.health.gc).toBeDefined()
+      expect(result.health.gc!.collectors).toHaveLength(1)
+      expect(result.health.gc!.collectors[0].name).toBe('G1 Young Generation')
+      expect(result.health.gc!.collectors[0].collections).toBe(50)
+    })
+
+    it('should not return empty GC object when no GC data exists', () => {
+      const raw = makeRaw({
+        reportType: 'health',
+        rawJson: { metadata: { platform: { name: 'Paper' } } },
+      })
+      const result = normalizer.normalize(raw)
+      expect(result.health.gc).toBeUndefined()
+    })
+
+    it('should not say "missing GC" when GC data is present', () => {
+      const raw = makeRaw({
+        reportType: 'sampler',
+        rawJson: {
+          metadata: {
+            platformStatistics: {
+              gc: {
+                'G1 Young Generation': { total: 10, avgTime: 15.0 },
+              },
+            },
+          },
+        },
+      })
+      const result = normalizer.normalize(raw)
+      // GC should be extracted, not empty
+      expect(result.health.gc).toBeDefined()
+      expect(result.health.gc!.collectors).toBeDefined()
+      expect(result.health.gc!.collectors!.length).toBeGreaterThan(0)
+    })
+  })
+
   describe('Util: toNumber', () => {
     it('should convert valid numbers', () => {
       const n = (normalizer as any).toNumber('19.5')

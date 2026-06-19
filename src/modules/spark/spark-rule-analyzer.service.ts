@@ -186,34 +186,124 @@ export class SparkRuleAnalyzer {
     commands: string[],
   ) {
     const mem = data.health.memory
-    if (!mem) return
-
-    if (mem.usagePercent != null && mem.usagePercent > 85) {
-      evidence.push({
-        title: '内存使用率高',
-        detail: `内存使用率 ${mem.usagePercent}%（${mem.usedMB ?? '?'}MB/${mem.maxMB ?? '?'}MB），接近上限`,
-        confidence: 'high',
-        type: 'system_metric',
-        canBeRootCause: false,
-      })
-      causes.push({
-        name: '内存压力',
-        category: 'memory',
-        reason: `内存使用率 ${mem.usagePercent}%，建议检查是否有内存泄漏或需要调整 JVM 参数`,
-        priority: 2,
-        confidence: 'medium',
-      })
-      commands.push('/spark heap')
+    if (mem) {
+      if (mem.usagePercent != null && mem.usagePercent > 85) {
+        evidence.push({
+          title: '内存使用率高',
+          detail: `内存使用率 ${mem.usagePercent}%（${mem.usedMB ?? '?'}MB/${mem.maxMB ?? '?'}MB），接近上限`,
+          confidence: 'high',
+          type: 'system_metric',
+          canBeRootCause: false,
+        })
+        causes.push({
+          name: '内存压力',
+          category: 'memory',
+          reason: `内存使用率 ${mem.usagePercent}%，建议检查是否有内存泄漏或需要调整 JVM 参数`,
+          priority: 2,
+          confidence: 'medium',
+        })
+        commands.push('/spark heap')
+      }
     }
 
-    if (data.health.gc?.warning) {
+    // ── GC analysis (P6) ──
+    this.analyzeGc(data, evidence, causes, commands)
+  }
+
+  private analyzeGc(
+    data: NormalizedSummary,
+    evidence: RuleEvidence[],
+    causes: SuspectedCause[],
+    _commands: string[],
+  ) {
+    const gc = data.health.gc
+    if (!gc || !gc.collectors || gc.collectors.length === 0) return
+
+    const collectors = gc.collectors
+
+    // Check for existing GC warning from raw data
+    if (gc.warning) {
       evidence.push({
         title: 'GC 警告',
-        detail: data.health.gc.warning,
+        detail: gc.warning,
         confidence: 'medium',
         type: 'system_metric',
         canBeRootCause: false,
       })
+    }
+
+    // Check average time per collector
+    for (const c of collectors) {
+      // High average GC time (>100ms) → medium warning
+      if (c.averageTimeMs != null && c.averageTimeMs > 100) {
+        evidence.push({
+          title: `${c.name} 平均耗时偏高`,
+          detail: `${c.name} 平均每次 GC 耗时 ${c.averageTimeMs.toFixed(1)}ms，超过 100ms 阈值。GC 就像服务器清理内存垃圾的保洁——偶尔清理很正常；但如果每次清理太久，服务器可能会短暂停顿。`,
+          confidence: 'medium',
+          type: 'system_metric',
+          canBeRootCause: false,
+        })
+      }
+
+      // Very high max GC time (>500ms) → high warning
+      if (c.maxTimeMs != null && c.maxTimeMs > 500) {
+        evidence.push({
+          title: `${c.name} 单次 GC 耗时过长`,
+          detail: `${c.name} 单次 GC 最大耗时 ${c.maxTimeMs.toFixed(1)}ms，超过 500ms。需要结合 TPS/MSPT 时间线判断是否在此时段发生卡顿。`,
+          confidence: 'high',
+          type: 'system_metric',
+          canBeRootCause: false,
+        })
+      }
+    }
+
+    // Old GC analysis
+    if (gc.hasOldGc) {
+      const oldTimeMs = gc.oldTimeMs || 0
+      const oldCollections = gc.oldCollections || 0
+
+      let conf: 'high' | 'medium' | 'low' = 'medium'
+      if (oldTimeMs > 1000 || oldCollections > 10) conf = 'high'
+      else if (oldTimeMs > 100 || oldCollections > 0) conf = 'medium'
+      else conf = 'low'
+
+      evidence.push({
+        title: '检测到 Old GC（老年代回收）',
+        detail: `Old GC 共 ${oldCollections} 次，累计耗时 ${oldTimeMs}ms。Old GC 通常会造成较长时间的停顿（Stop-The-World），但如果缺少采样时长和暂停分布数据，不能单独断言 Old GC 是 TPS 下降的根因。当前 spark metadata 中检测到 G1 Young / Old Generation GC 统计，该数据可用于判断是否存在频繁 Young GC 或 Old GC，但如果缺少采样时长和暂停分布，不能单独断言 GC 是 TPS 下降的根因。`,
+        confidence: conf,
+        type: 'system_metric',
+        canBeRootCause: conf !== 'low',
+      })
+
+      if (conf !== 'low') {
+        causes.push({
+          name: 'GC 压力（Old Generation）',
+          category: 'jvm',
+          reason: `Old GC 累计 ${oldCollections} 次 / ${oldTimeMs}ms，可能造成停顿。建议结合 spark health 报告和 JVM 参数进一步分析。`,
+          priority: 2,
+          confidence: conf,
+        })
+      }
+    }
+
+    // High total GC time without clear cause
+    if (gc.totalTimeMs != null && gc.totalTimeMs > 5000 && !gc.hasOldGc) {
+      evidence.push({
+        title: 'GC 总耗时较高',
+        detail: `所有 GC 收集器累计耗时 ${gc.totalTimeMs}ms，但没有 Old GC。频繁 Young GC 通常影响较小，但如缺少采样时长，无法判断频率是否异常。当前 GC 不是主要证据。`,
+        confidence: 'low',
+        type: 'system_metric',
+        canBeRootCause: false,
+      })
+    }
+
+    // If GC data looks normal, explicitly note it
+    const hasGcIssues = evidence.some(e =>
+      e.title.includes('GC') || e.title.includes('Old GC') || e.type === 'system_metric' && e.title.includes('平均耗时')
+    )
+    if (!hasGcIssues && !gc.warning) {
+      // GC data exists but looks normal — don't flag anything
+      // This is intentional: normal GC should not generate evidence
     }
   }
 

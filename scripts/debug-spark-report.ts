@@ -61,6 +61,35 @@ async function main() {
 
   console.log('\n── Health ──')
   console.log(safeJsonStringify(normalized.health))
+  console.log('\n── Timing ──')
+  console.log(safeJsonStringify(normalized.timing))
+
+  // ── GC detail (P6) ──
+  console.log('\n── GC Detail ──')
+  const gc = normalized.health.gc
+  if (gc && gc.collectors && gc.collectors.length > 0) {
+    const raw = normalizedInput.rawJson as any
+    const rawMetaGc = raw?.metadata?.platformStatistics?.gc
+    const fullMetaGc = raw?.full?.metadata?.platformStatistics?.gc
+    console.log(`  raw metadata.platformStatistics.gc: ${rawMetaGc ? 'found' : 'missing'}`)
+    console.log(`  full metadata.platformStatistics.gc: ${fullMetaGc ? 'found' : 'missing'}`)
+    console.log('  collectors:')
+    for (const c of gc.collectors) {
+      const parts: string[] = []
+      if (c.collections != null) parts.push(`collections=${c.collections}`)
+      if (c.timeMs != null) parts.push(`timeMs=${c.timeMs}`)
+      if (c.averageTimeMs != null) parts.push(`avg=${c.averageTimeMs.toFixed(1)}ms`)
+      if (c.maxTimeMs != null) parts.push(`max=${c.maxTimeMs}ms`)
+      console.log(`    - ${c.name}: ${parts.join(', ') || '(no detail)'}`)
+    }
+    if (gc.totalCollections != null) console.log(`  totalCollections=${gc.totalCollections}`)
+    if (gc.totalTimeMs != null) console.log(`  totalTimeMs=${gc.totalTimeMs}`)
+    console.log(`  hasOldGc=${gc.hasOldGc ?? false}`)
+    if (gc.youngCollections != null) console.log(`  youngCollections=${gc.youngCollections}`)
+    if (gc.oldCollections != null) console.log(`  oldCollections=${gc.oldCollections}`)
+  } else {
+    console.log('  (no GC data extracted)')
+  }
 
   console.log('\n── Profiler: Threads ──')
   for (const t of normalized.profiler.threads) {

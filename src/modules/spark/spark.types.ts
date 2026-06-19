@@ -19,6 +19,28 @@ export interface SparkRawData {
   fullFailReason?: string
 }
 
+// ---- GC types ----
+export interface NormalizedGcCollector {
+  name: string
+  collections?: number
+  timeMs?: number
+  averageTimeMs?: number
+  maxTimeMs?: number
+  lastTimeMs?: number
+}
+
+export interface NormalizedGcSummary {
+  collectors: NormalizedGcCollector[]
+  totalCollections?: number
+  totalTimeMs?: number
+  youngCollections?: number
+  youngTimeMs?: number
+  oldCollections?: number
+  oldTimeMs?: number
+  hasOldGc?: boolean
+  warning?: string
+}
+
 // ---- Normalized structured summary ----
 export interface NormalizedSummary {
   code: string
@@ -56,11 +78,9 @@ export interface NormalizedSummary {
       maxMB?: number
       usagePercent?: number
     }
-    gc?: {
-      collectors?: string[]
-      frequency?: string
-      warning?: string
-    }
+    gc?: NormalizedGcSummary
+    playerCount?: number
+    worldEntities?: number
   }
   profiler: {
     threads: NormalizedThread[]

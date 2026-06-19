@@ -1112,3 +1112,4 @@
 | 2026-06 | 来源线索改为置信度分级：低置信度来源线索不进入 suspected_causes，需主线程方法栈证据才能判定根因 |
 | 2026-06 | markdownReport 防御增强：所有返回的 markdownReport 不包含原始 AI JSON；AI JSON 解析失败时生成干净中文兜底报告 |
 | 2026-06 | Prompt 模板增加低置信度反误判规则 |
+| 2026-06 | P6: GC 数据提取 — 从 `metadata.platformStatistics.gc` 提取结构化 GC 数据（collectors、totalCollections、hasOldGc），GC 用于辅助判断不会单独作为根因，正常 GC 时报告明确说明不是主要证据。原版 top methods 不归因具体模组，mod source percent `?%` 仅作低置信线索 |

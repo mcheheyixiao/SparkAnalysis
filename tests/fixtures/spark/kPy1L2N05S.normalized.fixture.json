@@ -19,7 +19,22 @@
       "median": 66.5867405,
       "max": 295.98794
     },
-    "gc": {}
+    "gc": {
+      "collectors": [
+        {
+          "name": "G1 Young Generation",
+          "collections": 30,
+          "averageTimeMs": 23.0666666666667
+        },
+        {
+          "name": "G1 Old Generation",
+          "collections": 0,
+          "averageTimeMs": 0
+        }
+      ],
+      "totalCollections": 30,
+      "hasOldGc": false
+    }
   },
   "profiler": {
     "threads": [
