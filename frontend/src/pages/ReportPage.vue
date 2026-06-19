@@ -53,7 +53,7 @@
               {{ report.sparkCode }}
             </n-tag>
             <severity-badge v-if="report.severity" :severity="report.severity" />
-            <n-tag :bordered="false" size="small">{{ reportTypeLabel }}</n-tag>
+            <n-tag :bordered="false" size="small">{{ reportTypeText }}</n-tag>
           </n-space>
         </div>
 
@@ -65,19 +65,39 @@
               完成于 {{ formatDate(report.completedAt) }}
             </n-text>
           </div>
-          <p class="summary-text" v-if="report.summary">{{ report.summary }}</p>
-          <p class="summary-text" v-if="aiResult?.one_sentence_summary">
-            {{ aiResult.one_sentence_summary }}
-          </p>
+          <div class="summary-text-list" v-if="summaryTexts.length">
+            <p
+              v-for="(text, index) in summaryTexts"
+              :key="index"
+              class="summary-text"
+            >
+              {{ text }}
+            </p>
+          </div>
 
           <!-- Metrics -->
-          <div class="summary-metrics" v-if="report.normalizedSummary">
+          <div class="summary-metrics" v-if="summaryMetrics.length">
             <metric-card
-              v-for="(val, key) in flatMetrics"
-              :key="key"
-              :label="String(key)"
-              :value="String(val)"
+              v-for="metric in summaryMetrics"
+              :key="metric.key"
+              :label="metric.label"
+              :value="metric.value"
+              :unit="metric.unit"
+              :trend="metric.trend"
+              :animate-value="true"
             />
+          </div>
+
+          <!-- Server environment info -->
+          <div class="summary-meta" v-if="summaryMeta.length">
+            <n-tag
+              v-for="item in summaryMeta"
+              :key="item.key"
+              size="small"
+              :bordered="false"
+            >
+              {{ item.label }}：{{ item.value }}
+            </n-tag>
           </div>
         </n-card>
 
@@ -192,16 +212,257 @@ const report = ref<PublicReport>({ reportId, status: 'processing' })
 
 const aiResult = computed(() => report.value.aiResult || null)
 
-const flatMetrics = computed(() => {
-  const s = report.value.normalizedSummary
-  if (!s) return {}
-  const flat: Record<string, unknown> = {}
-  for (const [key, val] of Object.entries(s)) {
-    if (typeof val === 'string' || typeof val === 'number' || typeof val === 'boolean') {
-      flat[key] = val
-    }
+// ── Summary types ──
+
+type MetricTrend = 'up' | 'down' | 'stable'
+
+interface SummaryMetric {
+  key: string
+  label: string
+  value: string | number
+  unit?: string
+  trend?: MetricTrend
+}
+
+// ── Path helpers ──
+
+function getRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function getPath(root: unknown, path: string[]): unknown {
+  let current: unknown = root
+
+  for (const key of path) {
+    const record = getRecord(current)
+    if (!record) return undefined
+    current = record[key]
   }
-  return flat
+
+  return current
+}
+
+function getNumberPath(root: unknown, path: string[]): number | undefined {
+  const value = getPath(root, path)
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return undefined
+}
+
+function getStringPath(root: unknown, path: string[]): string | undefined {
+  const value = getPath(root, path)
+  return typeof value === 'string' && value.trim() ? value : undefined
+}
+
+// ── Formatting helpers ──
+
+function formatMetricNumber(value: number, digits = 1): string {
+  if (!Number.isFinite(value)) return '—'
+  return Number.isInteger(value) || digits === 0 ? String(Math.round(value)) : value.toFixed(digits)
+}
+
+function formatDurationSeconds(seconds: number): string {
+  if (!Number.isFinite(seconds)) return '—'
+  if (seconds >= 60) {
+    const minutes = Math.floor(seconds / 60)
+    const rest = Math.round(seconds % 60)
+    return rest > 0 ? `${minutes}m ${rest}s` : `${minutes}m`
+  }
+  return `${Math.round(seconds)}s`
+}
+
+function formatMemoryMB(usedMB: number, maxMB?: number): string {
+  const usedGB = usedMB / 1024
+  if (maxMB && maxMB > 0) {
+    const maxGB = maxMB / 1024
+    return `${usedGB.toFixed(1)}/${maxGB.toFixed(1)} GB`
+  }
+  if (usedGB >= 1) return `${usedGB.toFixed(1)} GB`
+  return `${Math.round(usedMB)} MB`
+}
+
+function normalizeSummaryText(text: string): string {
+  return text
+    .replace(/\s+/g, ' ')
+    .replace(/[，。,.!！?？；;：:]/g, '')
+    .trim()
+    .toLowerCase()
+}
+
+// ── Report type label (computed) ──
+
+const reportTypeText = computed(() => {
+  const type = report.value.reportType
+    || getStringPath(report.value.normalizedSummary, ['reportType'])
+    || 'unknown'
+
+  return reportTypeLabel(type)
+})
+
+// ── Summary texts (deduplicated) ──
+
+const summaryTexts = computed(() => {
+  const values = [
+    report.value.summary,
+    aiResult.value?.one_sentence_summary,
+  ]
+
+  const seen = new Set<string>()
+  const result: string[] = []
+
+  for (const value of values) {
+    if (typeof value !== 'string') continue
+    const text = value.trim()
+    if (!text) continue
+
+    const normalized = normalizeSummaryText(text)
+    if (seen.has(normalized)) continue
+
+    seen.add(normalized)
+    result.push(text)
+  }
+
+  return result
+})
+
+// ── Curated performance metrics ──
+
+const summaryMetrics = computed<SummaryMetric[]>(() => {
+  const s = report.value.normalizedSummary
+  if (!s) return []
+
+  const metrics: SummaryMetric[] = []
+
+  const tps = getNumberPath(s, ['health', 'tps', 'mean'])
+    ?? getNumberPath(s, ['health', 'tps', 'latest'])
+
+  if (tps != null) {
+    metrics.push({
+      key: 'tps',
+      label: 'TPS',
+      value: formatMetricNumber(tps, 1),
+      unit: 'TPS',
+      trend: tps >= 19.5 ? 'stable' : 'up',
+    })
+  }
+
+  const msptMean = getNumberPath(s, ['health', 'mspt', 'mean'])
+    ?? getNumberPath(s, ['health', 'mspt', 'median'])
+
+  if (msptMean != null) {
+    metrics.push({
+      key: 'msptMean',
+      label: 'MSPT 平均',
+      value: formatMetricNumber(msptMean, 1),
+      unit: 'ms',
+      trend: msptMean < 40 ? 'down' : msptMean < 50 ? 'stable' : 'up',
+    })
+  }
+
+  const msptMax = getNumberPath(s, ['health', 'mspt', 'max'])
+  if (msptMax != null) {
+    metrics.push({
+      key: 'msptMax',
+      label: 'MSPT 最大',
+      value: formatMetricNumber(msptMax, 1),
+      unit: 'ms',
+      trend: msptMax <= 100 ? 'stable' : 'up',
+    })
+  }
+
+  const memoryUsage = getNumberPath(s, ['health', 'memory', 'usagePercent'])
+  const memoryUsed = getNumberPath(s, ['health', 'memory', 'usedMB'])
+  const memoryMax = getNumberPath(s, ['health', 'memory', 'maxMB'])
+
+  if (memoryUsage != null) {
+    metrics.push({
+      key: 'memoryUsage',
+      label: '内存使用',
+      value: formatMetricNumber(memoryUsage, 0),
+      unit: '%',
+      trend: memoryUsage >= 85 ? 'up' : 'stable',
+    })
+  } else if (memoryUsed != null) {
+    metrics.push({
+      key: 'memoryUsed',
+      label: '已用内存',
+      value: formatMemoryMB(memoryUsed, memoryMax),
+      unit: memoryMax ? undefined : 'MB',
+      trend: 'stable',
+    })
+  }
+
+  const cpuProcess = getNumberPath(s, ['health', 'cpu', 'process'])
+  if (cpuProcess != null) {
+    metrics.push({
+      key: 'cpuProcess',
+      label: '进程 CPU',
+      value: formatMetricNumber(cpuProcess, 0),
+      unit: '%',
+      trend: cpuProcess >= 85 ? 'up' : 'stable',
+    })
+  }
+
+  const playerCount = getNumberPath(s, ['health', 'playerCount'])
+  if (playerCount != null) {
+    metrics.push({
+      key: 'playerCount',
+      label: '在线玩家',
+      value: formatMetricNumber(playerCount, 0),
+      unit: '人',
+      trend: 'stable',
+    })
+  }
+
+  const worldEntities = getNumberPath(s, ['health', 'worldEntities'])
+    ?? getNumberPath(s, ['health', 'entityDistribution', 'totalEntities'])
+
+  if (worldEntities != null) {
+    metrics.push({
+      key: 'worldEntities',
+      label: '世界实体',
+      value: formatMetricNumber(worldEntities, 0),
+      unit: '个',
+      trend: worldEntities >= 5000 ? 'up' : 'stable',
+    })
+  }
+
+  const durationSeconds = getNumberPath(s, ['timing', 'durationSeconds'])
+  if (durationSeconds != null) {
+    metrics.push({
+      key: 'duration',
+      label: '采样时长',
+      value: formatDurationSeconds(durationSeconds),
+      trend: 'stable',
+    })
+  }
+
+  return metrics
+})
+
+// ── Server environment info ──
+
+const summaryMeta = computed(() => {
+  const s = report.value.normalizedSummary
+  if (!s) return []
+
+  const items: Array<{ key: string; label: string; value: string }> = []
+
+  const platform = getStringPath(s, ['server', 'platform'])
+  if (platform) items.push({ key: 'platform', label: '平台', value: platform })
+
+  const mcVersion = getStringPath(s, ['server', 'minecraftVersion'])
+  if (mcVersion) items.push({ key: 'minecraftVersion', label: 'MC', value: mcVersion })
+
+  const sparkVersion = getStringPath(s, ['server', 'sparkVersion'])
+  if (sparkVersion) items.push({ key: 'sparkVersion', label: 'spark', value: sparkVersion })
+
+  return items
 })
 
 // ── Display markdown priority ──
@@ -361,9 +622,16 @@ onBeforeUnmount(() => {
 
 .summary-metrics {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
   gap: 12px;
   margin-top: 16px;
+}
+
+.summary-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
 }
 
 .report-section-card {
