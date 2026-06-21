@@ -72,6 +72,8 @@
           </div>
         </template>
       </n-card>
+
+      <SparkAdBanner />
     </div>
   </public-layout>
 </template>
@@ -85,6 +87,7 @@ import type { ReportStatus } from '@/api/types'
 import PublicLayout from '@/layouts/PublicLayout.vue'
 import StatusTimeline from '@/components/public/StatusTimeline.vue'
 import ErrorState from '@/components/common/ErrorState.vue'
+import SparkAdBanner from '@/components/public/SparkAdBanner.vue'
 import { useRevealAnimation } from '@/composables/useRevealAnimation'
 import { ScrollTrigger } from '@/plugins/gsap'
 
